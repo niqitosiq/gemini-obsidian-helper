@@ -61,10 +61,12 @@ def schedule_task(task_details: dict, source: str) -> tuple[bool, str]:
     priority = task_details.get("priority", 4)
     duration_minutes = task_details.get("estimated_duration_minutes")
     project_id = task_details.get("project_id")
-    deadline_str = task_details.get("deadline")
+    start_time_str = task_details.get("start_time") or task_details.get(
+        "deadline"
+    )  # Support both keys for backward compatibility
 
     logger.debug(
-        f"Task details - Action: {action}, Duration: {duration_minutes} min, Deadline: {deadline_str}"
+        f"Task details - Action: {action}, Duration: {duration_minutes} min, Start time: {start_time_str}"
     )
 
     if not action:
@@ -91,12 +93,12 @@ def schedule_task(task_details: dict, source: str) -> tuple[bool, str]:
     )
 
     # Handle scheduling logic
-    if deadline_str:
+    if start_time_str:
         try:
-            if len(deadline_str) > 10:  # Has time component
-                target_time = datetime.fromisoformat(deadline_str)
+            if len(start_time_str) > 10:  # Has time component
+                target_time = datetime.fromisoformat(start_time_str)
             else:  # Only date
-                target_time = datetime.fromisoformat(deadline_str + " 00:00")
+                target_time = datetime.fromisoformat(start_time_str + " 00:00")
 
             # If it's a future date, use work start hour
             if target_time.date() > now.date():
@@ -109,7 +111,7 @@ def schedule_task(task_details: dict, source: str) -> tuple[bool, str]:
             schedule_in_slot = True
         except ValueError:
             logger.warning(
-                f"Invalid deadline format: {deadline_str}, using current time"
+                f"Invalid start time format: {start_time_str}, using current time"
             )
             start_time = now + timedelta(minutes=15 - now.minute % 15)
 

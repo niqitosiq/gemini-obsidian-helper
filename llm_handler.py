@@ -3,7 +3,7 @@ import google.generativeai as genai
 import google.api_core.exceptions
 import json
 import os
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List, Dict, Any  # Add Any
 from datetime import datetime
 import config
 import knowledge_base
@@ -17,8 +17,8 @@ try:
     if not config.GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY not set.")
     genai.configure(api_key=config.GEMINI_API_KEY)
-    _model = genai.GenerativeModel("gemini-1.5-flash-latest")
-    logger.info("Gemini API client configured with model 'gemini-1.5-flash-latest'.")
+    _model = genai.GenerativeModel("gemini-2.0-flash")
+    logger.info("Gemini API client configured with model 'gemini-2.0-flash'. ")
 except Exception as e:
     logger.critical(f"Critical error configuring Gemini API: {e}", exc_info=True)
 
@@ -89,12 +89,17 @@ If the user writes in English, respond in English.
 Extract from the request:
 1.  `action`: Main action/task essence (brief, infinitive or noun).
 2.  `details`: Additional details, description.
-3.  `deadline`: The date/time when the task should be COMPLETED. Use 'YYYY-MM-DD HH:MM' for time, 'YYYY-MM-DD' for date only. For relative times like "tomorrow", convert to actual date. Set null if unclear. IMPORTANT: do not interpret time durations (like "2 hours") as deadlines.
+3.  `start_time`: The date/time when the task should START. Use 'YYYY-MM-DD HH:MM' for time, 'YYYY-MM-DD' for date only. For relative times like "tomorrow", convert to actual date. Set null if unclear. 
+    IMPORTANT START TIME INTERPRETATION RULES:
+    - The time the user specifies is usually when they want to START the task, not when it should be completed.
+    - When user says "в 6 вечера" or "at 6 PM", this is the starting time for the task.
+    - When user says "до 6 вечера" or "by 6 PM", calculate an appropriate start time by subtracting the task duration from this deadline.
+    - Don't interpret time durations (like "2 hours" or "час") as start times; these indicate how long the task takes.
 4.  `priority`: Task priority (integer 1-4, where 1 is highest). Determine from keywords (urgent, important), context and Knowledge Base. Default to 4 if unclear.
 5.  `estimated_duration_minutes`: How long the task will take to complete (integer minutes). IMPORTANT: When user says something like "2 hours" or "час", this is usually a duration, not a deadline. Convert hours to minutes (e.g., "2 hours" = 120 minutes). If user gives duration in response to a clarification question, this is almost always the task duration.
 6.  `project_id`: ID of most suitable existing Todoist project from CONTEXT list. Compare task essence with project names carefully. Use 'inbox' if none fits.
-7.  `status`: 'complete' if all info (action, deadline, priority, estimated_duration_minutes, project_id) is extracted and sufficient for task creation, else 'incomplete'.
-8.  `missing_info`: Array of strings describing missing information (only if status='incomplete'). Example: ["No deadline specified", "Task duration unclear", "Need to clarify project"].
+7.  `status`: 'complete' if all info (action, start_time, priority, estimated_duration_minutes, project_id) is extracted and sufficient for task creation, else 'incomplete'.
+8.  `missing_info`: Array of strings describing missing information (only if status='incomplete'). Example: ["No start time specified", "Task duration unclear", "Need to clarify project"].
 9.  `clarification_question`: One short, polite question to user to clarify the FIRST item in `missing_info` (only if status='incomplete'). Must be in the same language as the user's request.
 
 Return response STRICTLY in JSON format.
@@ -228,11 +233,17 @@ Each task should have its own analysis in the response array.
 IMPORTANT: Always respond in the same language as the user's request. If the user writes in Russian, respond in Russian.
 If the user writes in English, respond in English.
 
+**DO NOT create tasks for commands like "plan my day", "schedule my day", "распланируй день", "запланируй день", "создай расписание". These are commands, not tasks to be created. If the user request is only such a command, return an empty array `[]`.**
+
 For EACH TASK in the request, extract:
 1.  `action`: Main action/task essence (brief, infinitive or noun).
 2.  `details`: Additional details, description.
-3.  `deadline`: Desired completion time. Use 'YYYY-MM-DD HH:MM' for time, 'YYYY-MM-DD' for date only. Convert relative ("tomorrow", "in 2 days") to specific date/time. Set null if unclear.
-4.  `priority`: Task priority (integer 1-4, where 1 is highest). Determine from keywords (urgent, important), context and Knowledge Base. Default to 4 if unclear.
+3.  `start_time`: When the task should START. Use 'YYYY-MM-DD HH:MM' for time, 'YYYY-MM-DD' for date only. Convert relative ("tomorrow", "in 2 days") to specific date/time. Set null if unclear.
+    IMPORTANT START TIME INTERPRETATION RULES:
+    - The time the user specifies is usually when they want to START the task, not when it should be completed.
+    - When user says "в 6 вечера" or "at 6 PM", this is the starting time for the task.
+    - When user says "до 6 вечера" or "by 6 PM", calculate an appropriate start time by subtracting the task duration from this deadline.
+4.  `priority`: Task priority (integer 1-4, where 4 is highest). Determine from keywords (urgent, important), context and Knowledge Base. Default to 4 if unclear.
 5.  `estimated_duration_minutes`: Task duration estimate in minutes (integer). Use context, Knowledge Base and common sense. Set null if impossible to estimate.
 6.  `project_id`: ID of most suitable existing Todoist project from CONTEXT list. Compare task essence with project names carefully. Use 'inbox' if none fits.
 7.  `source_text`: The exact text fragment from the original request that led to identifying this task.
@@ -306,3 +317,160 @@ Return response as an ARRAY of task objects in JSON format, even if there's only
     except Exception as e:
         logger.error(f"Unexpected error during Gemini call: {e}")
         return []
+
+
+# --- NEW Function to Parse Duration ---
+async def parse_duration_response(text: str) -> Optional[int]:
+    """Uses LLM to parse duration in minutes from user's text response."""
+    if not _model:
+        logger.error("Duration parsing impossible: Gemini model not initialized.")
+        return None
+
+    # No complex context needed, just the text
+    system_instruction = """Your task is to analyze the user's text response, which answers a question about task duration. Extract the duration strictly in TOTAL MINUTES.
+- Handle phrases like "полтора часа" (90 minutes), "час" (60 minutes), "2 часа" (120 minutes), "45 минут" (45 minutes).
+- If the user provides a range (e.g., "1-2 часа"), try to provide a reasonable average or midpoint in minutes (e.g., 90 minutes).
+- If the duration is unclear or cannot be determined, return null.
+- Respond ONLY with the integer number of minutes or the word null. Do not add any other text.
+
+Examples:
+User text: "где-то полтора часа" -> Response: 90
+User text: "минут 20-30" -> Response: 25
+User text: "1 час" -> Response: 60
+User text: "I don't know" -> Response: null
+User text: "maybe 2h" -> Response: 120
+User text: "завтра" -> Response: null
+"""
+    user_prompt = f'User text: "{text}"'
+    full_prompt = f"{system_instruction}\n\n{user_prompt}\n\nResponse:"
+
+    logger.debug(f"Sending prompt to LLM for duration parsing: {full_prompt}")
+
+    try:
+        response = _model.generate_content(full_prompt)
+        result_text = response.text.strip().lower()
+        logger.debug(f"Received LLM response for duration parsing: '{result_text}'")
+
+        if result_text == "null":
+            return None
+        elif result_text.isdigit():
+            return int(result_text)
+        else:
+            logger.warning(
+                f"LLM returned non-integer/non-null for duration: '{result_text}'"
+            )
+            return None  # Treat unexpected responses as failure
+
+    except google.api_core.exceptions.GoogleAPIError as e:
+        logger.error(f"Gemini API error during duration parsing: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error during duration parsing: {e}", exc_info=True)
+        return None
+
+
+# --- Function for Generic Responses ---
+async def generate_response(prompt_type: str, data: Dict[str, Any]) -> Optional[str]:
+    """Generates various text responses using LLM based on prompt type."""
+    if not _model:
+        logger.error("Response generation impossible: Gemini model not initialized.")
+        return None
+
+    # Assemble context (might need adjustment based on prompt type)
+    # For now, use standard context assembly
+    full_context = assemble_context("llm_response_generation")
+    logger.debug(f"Assembled context for LLM response generation:\n{full_context}")
+
+    system_instruction = "You are an AI assistant helping a user manage their tasks and schedule. Generate a helpful and concise response based on the request type and provided data. Respond in Russian unless the user context indicates otherwise. Be friendly and encouraging."
+
+    user_prompt = f"Request Type: {prompt_type}\nData:\n"
+    # Format data nicely for the prompt
+    for key, value in data.items():
+        user_prompt += f"- {key}: {json.dumps(value, ensure_ascii=False, indent=2)}\n"  # Use json.dumps for complex data
+
+    # Add specific instructions based on prompt_type
+    if prompt_type == "schedule_intro":
+        user_prompt += "\nGenerate a short, friendly introductory message for the user's daily schedule, mentioning the day type (workday/weekend) and date."
+        user_prompt += f"\nExample for workday: '🗓 Доброе утро! Вот ваше расписание на сегодня (пятница, 18.04.2025):'"
+        user_prompt += f"\nExample for weekend: '🏖 Доброе утро! Сегодня пятница, 18.04.2025 - выходной день! Вот несколько идей:'"
+    elif prompt_type == "schedule_body":
+        user_prompt += "\nGenerate the main body of the schedule message."
+        user_prompt += (
+            "\n- If there are scheduled_tasks, list them clearly with times (HH:MM)."
+        )
+        user_prompt += "\n- If there are no scheduled_tasks but needs_clarification is true, state that some tasks need duration clarification for planning."
+        user_prompt += "\n- If there are no scheduled_tasks and no clarification needed, state that there are no tasks planned for today (mention if it's a weekend)."
+        user_prompt += "\n- Keep the format clean and easy to read."
+        user_prompt += "\nExample with tasks: '📋 09:00 - Task 1\\n⏰ 11:30 - Task 2 (срок сегодня)'"
+        user_prompt += "\nExample clarification needed: 'Есть задачи на сегодня, но для планирования нужно уточнить их длительность.'"
+        user_prompt += (
+            "\nExample empty workday: 'Не нашел задач для планирования на сегодня.'"
+        )
+        user_prompt += (
+            "\nExample empty weekend: 'Сегодня выходной! Задач нет, можно отдохнуть.'"
+        )
+    elif prompt_type == "clarify_duration":
+        user_prompt += "\nGenerate a short, polite question asking the user for the estimated duration (in minutes or hours) for the given task_content."
+        user_prompt += f"\nExample: '📝 Про задачу \"{data.get('task_content', '...')}\": Сколько примерно времени потребуется на ее выполнение?'"
+    # --- NEW Prompt Type ---
+    elif prompt_type == "suggest_schedule_slot":
+        user_prompt += "\nGenerate a message suggesting a specific time slot for a task. Ask the user to confirm via buttons."
+        user_prompt += f"\nExample: '🗓️ Предлагаю запланировать задачу \"{data.get('task_content', '...')}\" на {data.get('proposed_time', 'HH:MM')} сегодня ({data.get('date', 'YYYY-MM-DD')}). Назначить?'"
+    # --- NEW Prompt Type ---
+    elif prompt_type == "schedule_confirm":
+        user_prompt += "\nGenerate a short confirmation message that the user accepted the schedule suggestion and the task is now scheduled."
+        user_prompt += f"\nExample: '✅ Отлично! Задача \"{data.get('task_content', '...')}\" запланирована на {data.get('scheduled_time', 'HH:MM')}.'"
+    # --- NEW Prompt Type ---
+    elif prompt_type == "schedule_skip":
+        user_prompt += "\nGenerate a short message acknowledging the user skipped the schedule suggestion for the task."
+        user_prompt += f"\nExample: '👌 Понял, пропускаем задачу \"{data.get('task_content', '...')}\" сейчас.'"
+    elif prompt_type == "task_creation_success":
+        user_prompt += "\nGenerate a confirmation message that a task was successfully created. Include task content, project, and due time if available."
+        user_prompt += f"\nExample: '✅ Задача \"{data.get('content', '...')}\" добавлена в проект \"{data.get('project_name', 'Входящие')}\" со сроком \"{data.get('due_string', 'без срока')}\".'"
+    elif prompt_type == "task_creation_fail":
+        user_prompt += (
+            "\nGenerate a short message indicating that task creation failed."
+        )
+        user_prompt += f"\nExample: '❌ Не удалось создать задачу в Todoist.'"
+    elif prompt_type == "duration_update_success":
+        user_prompt += (
+            "\nGenerate a confirmation message that the task duration was updated."
+        )
+        user_prompt += f"\nExample: '✅ Продолжительность задачи обновлена на {data.get('duration_minutes', '...')} минут.'"
+    elif prompt_type == "duration_update_fail":
+        user_prompt += (
+            "\nGenerate a short message indicating that updating task duration failed."
+        )
+        user_prompt += f"\nExample: '❌ Не удалось обновить продолжительность задачи.'"
+    elif prompt_type == "general_error":
+        user_prompt += "\nGenerate a generic error message for the user."
+        user_prompt += f"\nExample: 'Произошла ошибка при обработке вашего запроса.'"
+    # Add more prompt types as needed (e.g., reschedule confirmation/error, semantic command errors)
+
+    full_prompt = (
+        f"{system_instruction}\n\n{full_context}\n{user_prompt}\n\nGenerated Response:"
+    )
+    logger.debug(
+        f"Final Gemini prompt for response generation (start): {full_prompt[:500]}..."
+    )
+
+    try:
+        response = _model.generate_content(full_prompt)
+        generated_text = response.text.strip()
+        logger.debug(f"Received Gemini response for '{prompt_type}': {generated_text}")
+
+        # Basic validation/cleanup
+        if not generated_text or len(generated_text) < 5:
+            logger.warning(
+                f"LLM generated suspiciously short/empty response for {prompt_type}"
+            )
+            return None  # Indicate failure
+
+        return generated_text
+
+    except google.api_core.exceptions.GoogleAPIError as e:
+        logger.error(f"Gemini API error during response generation: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error during response generation: {e}", exc_info=True)
+        return None
