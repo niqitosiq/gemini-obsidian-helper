@@ -18,6 +18,7 @@ import config
 import knowledge_base
 import todoist_handler
 
+
 logger = logging.getLogger(__name__)
 
 # --- MODIFICATION: Use Client instead of Model ---
@@ -41,7 +42,6 @@ def assemble_context(
     source: str, conversation_history: Optional[List[str]] = None
 ) -> str:
     """Assembles context for Gemini prompt based on settings."""
-    # --- MODIFICATION: Check _client ---
     if not _client:
         return "[Context cannot be assembled: Gemini API Error]"
 
@@ -57,8 +57,8 @@ def assemble_context(
     kb_content = knowledge_base.read_knowledge_base()
     if kb_content:
         if config.GEMINI_CONTEXT_LEVEL != "none":
-            context_parts.append("- Knowledge Base (Findings, Preferences, Feedback):")
-            context_parts.append(kb_content)
+            context_parts.append("- Knowledge Base:")
+            context_parts.append(kb_content)  # Append the actual content
     else:
         context_parts.append("- Knowledge Base: Empty.")
 
@@ -71,14 +71,33 @@ def assemble_context(
 
     projects = todoist_handler.get_projects()
     if projects:
-        context_parts.append("- Existing Todoist projects:")
-        project_list_str = ", ".join(
-            [f"'{p['name']}' (ID: {p['id']})" for p in projects]
-        )
-        context_parts.append(f"  - [{project_list_str}]")
-        context_parts.append("  - 'inbox' (ID: inbox) - use if no project fits.")
+        context_parts.append("- Todoist Projects:")
+        for proj in projects:
+            context_parts.append(f"  - ID: {proj['id']}, Name: {proj['name']}")
     else:
-        context_parts.append("- Existing Todoist projects: Failed to retrieve.")
+        context_parts.append("- Todoist Projects: Could not fetch.")
+
+    # --- NEW: Add Active Tasks to Context ---
+    active_tasks = todoist_handler.get_tasks()  # Call the modified function
+    if active_tasks:
+        context_parts.append("- Active Todoist Tasks:")
+        # Limit the number of tasks shown to avoid excessive context length?
+        # For now, show all, but consider limiting later if needed.
+        for task in active_tasks:
+            due_info = ""
+            if task.due:
+                due_info = f", Due: {task.due.string}"
+            duration_info = ""
+            if task.duration:
+                duration_info = (
+                    f", Duration: {task.duration.amount} {task.duration.unit}"
+                )
+            context_parts.append(
+                f"  - ID: {task.id}, Content: '{task.content}'{due_info}{duration_info}"
+            )
+    else:
+        context_parts.append("- Active Todoist Tasks: None found or error fetching.")
+    # --- END NEW ---
 
     context_parts.append("[END CONTEXT]\\n")
     return "\n".join(context_parts)
@@ -280,158 +299,196 @@ def transcribe_audio(audio_file_path: str) -> Optional[str]:
         return None
 
 
-def analyze_text_batch(
-    text: str, source: str, conversation_history: Optional[List[str]] = None
+# --- NEW: Function to get instructions from LLM ---
+
+
+async def get_instructions(
+    user_text: str,
+    source: str,
+    conversation_history: Optional[List[str]] = None,
+    pending_question_key: Optional[str] = None,
+    pending_question_context: Optional[Any] = None,
 ) -> List[Dict]:
-    """Analyzes text and extracts multiple tasks if present."""
+    """
+    Asks the LLM to generate a sequence of instructions based on user input
+    and current state (e.g., pending question).
+    """
     if not _client:
-        logger.error("Analysis impossible: Gemini client not initialized.")
-        return []
+        logger.error(
+            "Instruction generation impossible: Gemini client not initialized."
+        )
+        # Return a reply instruction indicating an error
+        return [
+            {
+                "instruction_type": "reply_user",
+                "parameters": {"message_text": "Ошибка: Не удалось связаться с LLM."},
+            },
+            {"instruction_type": "finish_request", "parameters": {}},
+        ]
 
+    # Assemble context (now includes active tasks)
     full_context = assemble_context(source, conversation_history)
+    if pending_question_key:
+        # Include task_id in context if available from the pending question
+        task_id_context = ""
+        if isinstance(pending_question_context, dict) and pending_question_context.get(
+            "task_id"
+        ):
+            task_id_context = (
+                f"\n- Related Task ID: {pending_question_context['task_id']}"
+            )
 
-    system_instruction = """You are an AI assistant helping users manage tasks in Todoist.
-Your task is to analyze the USER REQUEST and split it into separate tasks if multiple tasks are mentioned.
-Each task should have its own analysis in the response array.
+        full_context += f"\n[PENDING QUESTION CONTEXT]\n- State Key: {pending_key}{task_id_context}\n- Details: {json.dumps(pending_question_context, ensure_ascii=False)}\n- User's Answer: {user_text}\n[END PENDING QUESTION CONTEXT]\n"
+        user_prompt_header = "USER ANSWER TO PENDING QUESTION:"
 
-IMPORTANT: Always respond in the same language as the user's request. If the user writes in Russian, respond in Russian.
-If the user writes in English, respond in English.
+    else:
+        user_prompt_header = "USER REQUEST:"
 
-**DO NOT create tasks for commands like "plan my day", "schedule my day", "распланируй день", "запланируй день", "создай расписание". These are commands, not tasks to be created. If the user request is only such a command, return an empty array `[]`.**
+    system_instruction = """You are an AI assistant controlling a bot. Your goal is to break down the user's request (or their answer to a previous question) into a sequence of explicit instructions for the bot to execute.
 
-For EACH TASK in the request, extract:
-1.  `action`: Main action/task essence (brief, infinitive or noun).
-2.  `details`: Additional details, description.
-3.  `start_time`: When the task should START. Use 'YYYY-MM-DD HH:MM' for time, 'YYYY-MM-DD' for date only. Convert relative ("tomorrow", "in 2 days") to specific date/time. Set null if unclear.
-    IMPORTANT START TIME INTERPRETATION RULES:
-    - The time the user specifies is usually when they want to START the task, not when it should be completed.
-    - When user says "в 6 вечера" or "at 6 PM", this is the starting time for the task.
-    - When user says "до 6 вечера" or "by 6 PM", calculate an appropriate start time by subtracting the task duration from this deadline.
-4.  `priority`: Task priority (integer 1-4, where 4 is highest). Determine from keywords (urgent, important), context and Knowledge Base. Default to 4 if unclear.
-5.  `estimated_duration_minutes`: Task duration estimate in minutes (integer). Use context, Knowledge Base and common sense. Set null if impossible to estimate.
-6.  `project_id`: ID of most suitable existing Todoist project from CONTEXT list. Compare task essence with project names carefully. Use 'inbox' if none fits.
-7.  `source_text`: The exact text fragment from the original request that led to identifying this task.
-8.  `status`: 'complete' if all info is sufficient for task creation, else 'incomplete'.
-9.  `missing_info`: Array of strings describing missing information (only if status='incomplete').
-10. `clarification_question`: One short, polite question to clarify the FIRST item in `missing_info` (only if status='incomplete'). Must be in the same language as the user's request.
+Analyze the request/answer considering the provided CONTEXT (Knowledge Base, projects, Active Todoist Tasks, time, pending question context if any).
 
-Return response as an ARRAY of task objects in JSON format, even if there's only one task."""
+Generate a JSON array of instruction objects. Each object must have 'instruction_type' and 'parameters'.
 
-    user_prompt = f"USER REQUEST: {text}"
+Available Instruction Types:
+
+1.  `create_task`: Creates a new task in Todoist. IMPORTANT: Use this instruction ONLY if you have sufficient details (content, due date/time, optionally duration). If key details like due date/time are missing and not implied by context (e.g., user didn't say 'today'), use `ask_user` first.
+    - `parameters`:
+        - `content` (str): Task title. Choose a clear and concise name. Include key details like duration if helpful (e.g., 'Велопрогулка 30 мин', 'Проверка почты'). Avoid generic names like 'задача' or 'поездка'.
+        - `project_id` (str, optional): ID from CONTEXT. Use 'inbox' if unsure.
+        - `due_string` (str, optional): Use Todoist natural language. **Be specific with time (e.g., "tomorrow 9am", "в пятницу 18:00", "2025-05-10 10:00"). Avoid vague terms like "вечером", "утром" unless the user explicitly uses them.** IMPORTANT: Only use recurrence patterns (...) if the user explicitly asks for repetition (...). If the request doesn't clearly state recurrence, create a task for a single instance (...). Do not default to 'today' unless explicitly stated by the user.
+        - `priority` (int, optional): 1 (P1) to 4 (P4). Default 4.
+        - `duration_minutes` (int, optional): Task duration in minutes. Ensure this matches the task name if duration is included there.
+        - `description` (str, optional): Task details.
+
+2.  `update_task`: Modifies an existing task in Todoist.
+    - `parameters`:
+        - `task_id` (str): The ID of the task to update. **Crucial! Find the correct task ID by matching the user's request with the 'Active Todoist Tasks' list provided in the CONTEXT. If you cannot uniquely identify the task, use `ask_user`. Do NOT guess or use 'unknown'.**
+        - `content` (str, optional): New task title.
+        - `due_string` (str, optional): New due date/time string. Use Todoist format. **Be specific with time (e.g., "tomorrow 9am", "в пятницу 18:00", "2025-05-10 10:00"). Avoid vague terms like "вечером", "утром".** Set to empty string "" to remove due date.
+        - `duration_minutes` (int, optional): New duration in minutes. Set to 0 or null to remove duration.
+        - `description` (str, optional): New description.
+        - `priority` (int, optional): New priority (1-4).
+        - `project_id` (str, optional): New project ID.
+
+3.  `reply_user`: Sends a message back to the user.
+    - `parameters`:
+        - `message_text` (str): The message to send. Use this to confirm actions taken (like task creation/update) or to explain issues.
+
+4.  `ask_user`: Asks the user a question to get missing information. Use this ONLY if information is absolutely necessary to proceed and cannot be reasonably assumed.
+    - `parameters`:
+        - `question_text` (str): The question for the user. Use this if `create_task` lacks due date/time (e.g., "На когда запланировать 'Купить шпаклевку'?"). Also use if the `task_id` for `update_task` is unclear or ambiguous based on the context (e.g., "Какую из задач 'Выпить пиво' вы хотите перенести?").
+        - `state_key` (str): A unique key describing what you are asking for (e.g., "clarify_due_date_for_task", "clarify_task_for_update", "get_duration_for_report"). The user's next message will be treated as the answer related to this key.
+        - `related_data` (dict, optional): Include relevant data like the task content being clarified or potential task matches.
+
+5.  `finish_request`: Signals that the current user request has been fully processed or cannot be processed further. MUST be the LAST instruction in the array if used.
+    - `parameters`: {}
+
+Workflow:
+- Analyze the user's input.
+- Task Creation Flow: Check for details, use `create_task` or `ask_user`.
+- Task Update Flow: Identify `task_id` from CONTEXT, use `update_task` or `ask_user`.
+- After `create_task` or `update_task`, usually add `reply_user` for confirmation.
+- If clarification needed via `ask_user`, stop and wait.
+- Always conclude with `finish_request`.
+- If input unclear, use `reply_user` to explain and then `finish_request`.
+
+Respond STRICTLY with a JSON array of instruction objects. Ensure the JSON is valid.
+"""
+    user_prompt = f"{user_prompt_header} {user_text}"
+
     # --- FIX: Instantiate types.Part directly ---
     contents_for_api = [
         types.Content(
             role="user",
-            parts=[
-                types.Part(text=f"{full_context}\n{user_prompt}")
-            ],  # Instantiate Part directly
+            parts=[types.Part(text=f"{full_context}\n{user_prompt}")],
         )
     ]
 
     logger.debug(
-        f"Final Gemini prompt for batch analysis (start): {str(contents_for_api)[:500]}..."
+        f"Generating instructions. Prompt starts with: {str(contents_for_api)[:500]}..."
     )
 
     try:
-        response = _client.models.generate_content(
+        response = await _client.aio.models.generate_content(
             model=_model_name,
             contents=contents_for_api,
-            config=(
-                types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                )
-                if system_instruction
-                else types.GenerateContentConfig(response_mime_type="application/json")
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
             ),
         )
-        logger.debug(f"Received Gemini response: {response.text}")
+        logger.debug(f"Received LLM response for instructions: {response.text}")
 
-        # --- MODIFICATION: JSON parsing might be simpler ---
-        # json_response_str = response.text.strip()
-        # if json_response_str.startswith("```json"):
-        #     json_response_str = json_response_str[7:]
-        # if json_response_str.endswith("```"):
-        #     json_response_str = json_response_str[:-3]
-        # json_response_str = json_response_str.strip()
-        # tasks = json.loads(json_response_str)
-
-        # Attempt direct parsing, fallback to text cleaning
         try:
             json_text = response.text.strip()
+            # Clean potential markdown fences
             if json_text.startswith("```json"):
                 json_text = json_text[7:]
             if json_text.endswith("```"):
                 json_text = json_text[:-3]
-            tasks = json.loads(json_text.strip())
-        except (json.JSONDecodeError, AttributeError) as parse_err:
+            instructions = json.loads(json_text.strip())
+
+            if not isinstance(instructions, list):
+                logger.error(f"LLM instruction response is not a list: {instructions}")
+                raise ValueError("LLM response for instructions was not a list.")
+
+            # Basic validation of instruction structure
+            for instruction in instructions:
+                if (
+                    not isinstance(instruction, dict)
+                    or "instruction_type" not in instruction
+                    or "parameters" not in instruction
+                ):
+                    logger.error(f"Invalid instruction format: {instruction}")
+                    raise ValueError("Invalid instruction format received from LLM.")
+
+            return instructions
+
+        except (json.JSONDecodeError, ValueError, AttributeError) as parse_err:
             logger.error(
-                f"Failed to parse JSON from Gemini batch response: {parse_err}. Response text: {getattr(response, 'text', '[NO TEXT]')}"
+                f"Failed to parse JSON instructions from LLM response: {parse_err}. Response text: {getattr(response, 'text', '[NO TEXT]')}"
             )
-            return []
-
-        if not isinstance(tasks, list):
-            # If the response is a single object, wrap it in a list
-            if isinstance(tasks, dict) and "action" in tasks:
-                logger.warning(
-                    "LLM returned a single object for batch analysis, wrapping in list."
-                )
-                tasks = [tasks]
-            else:
-                logger.error(
-                    f"LLM batch response was not a list or valid single task object: {tasks}"
-                )
-                return []
-
-        # Validate each task
-        valid_tasks = []
-        for task in tasks:
-            if (
-                not isinstance(task, dict)
-                or "action" not in task
-                or "status" not in task
-            ):
-                logger.warning(f"Invalid task structure in Gemini response: {task}")
-                continue
-
-            if task["status"] == "incomplete" and not task.get("missing_info"):
-                task["missing_info"] = ["Need to clarify details"]
-                task["clarification_question"] = (
-                    "Не могли бы вы уточнить детали задачи?"
-                    if any(char in text for char in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
-                    else "Could you please provide more details about the task?"
-                )
-
-            knowledge_base.log_entry(
-                "llm_analysis",
+            # Fallback instruction
+            return [
                 {
-                    "input_text": task.get("source_text", text),
-                    "source": source,
-                    "llm_output_status": task.get("status"),
-                    "extracted_action": task.get("action"),
-                    "extracted_project": task.get("project_id"),
-                    "missing_info": task.get("missing_info"),
+                    "instruction_type": "reply_user",
+                    "parameters": {
+                        "message_text": "Извините, не смог обработать ответ от LLM. Попробуйте еще раз."
+                    },
                 },
-            )
-            valid_tasks.append(task)
+                {"instruction_type": "finish_request", "parameters": {}},
+            ]
 
-        return valid_tasks
-
-    except json.JSONDecodeError as e:
-        logger.error(
-            f"Error decoding JSON from Gemini response: {e}\\nResponse: {getattr(response, 'text', '[NO TEXT]')}"
-        )
-        return []
-    # --- MODIFICATION: Use new exception type ---
     except genai_errors.APIError as e:
-        logger.error(f"Gemini API error: {e}")
-        return []
+        logger.error(
+            f"Gemini API error during instruction generation: {e}", exc_info=True
+        )
+        return [
+            {
+                "instruction_type": "reply_user",
+                "parameters": {"message_text": "Ошибка API при генерации инструкций."},
+            },
+            {"instruction_type": "finish_request", "parameters": {}},
+        ]
     except Exception as e:
-        logger.error(f"Unexpected error during Gemini call: {e}")
-        return []
+        logger.error(
+            f"Unexpected error during instruction generation: {e}", exc_info=True
+        )
+        return [
+            {
+                "instruction_type": "reply_user",
+                "parameters": {
+                    "message_text": "Неожиданная ошибка при генерации инструкций."
+                },
+            },
+            {"instruction_type": "finish_request", "parameters": {}},
+        ]
 
 
-# --- NEW Function to Parse Duration ---
+# --- Function to parse duration response ---
+
+
 async def parse_duration_response(text: str) -> Optional[int]:
     """Uses LLM to parse duration in minutes from user's text response."""
     if not _client:
@@ -507,6 +564,8 @@ User text: "завтра" -> Response: null
 
 
 # --- Function for Generic Responses ---
+
+
 async def generate_response(prompt_type: str, data: Dict[str, Any]) -> Optional[str]:
     """Generates various text responses using LLM based on prompt type."""
     if not _client:
@@ -557,7 +616,7 @@ async def generate_response(prompt_type: str, data: Dict[str, Any]) -> Optional[
         user_prompt += "\\nGenerate a short message acknowledging the user skipped the schedule suggestion for the task."
         user_prompt += f"\\nExample: '👌 Понял, пропускаем задачу \\\"{data.get('task_content', '...')}\\\" сейчас.'"
     elif prompt_type == "task_creation_success":
-        user_prompt += "\\nGenerate a confirmation message that a task was successfully created. Include task content, project, and due time if available."
+        user_prompt += "\\nGenerate a confirmation message that a task was successfully created. Include task content, project and due time if available."
         user_prompt += f"\\nExample: '✅ Задача \\\"{data.get('content', '...')}\\\" добавлена в проект \\\"{data.get('project_name', 'Входящие')}\\\" со сроком \\\"{data.get('due_string', 'без срока')}\\\".'"
     elif prompt_type == "task_creation_fail":
         user_prompt += (

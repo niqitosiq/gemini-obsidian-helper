@@ -2,7 +2,7 @@ import logging
 import os
 import tempfile
 import asyncio
-from typing import Optional
+from typing import Optional, List, Dict, Any  # Added Dict, Any
 
 # Add re import (keep for now, might be useful elsewhere)
 import re
@@ -21,27 +21,24 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    # ConversationHandler, # Remove ConversationHandler
-    CallbackQueryHandler,  # Add this
+    CallbackQueryHandler,
 )
 from telegram.constants import ParseMode
 import config
 import llm_handler  # Import llm_handler
-import scheduler
+
+# import scheduler # Keep if needed for trigger_daily_schedule or fallbacks
+import todoist_handler  # Keep for create_task
 import knowledge_base
-import semantic_task_manager
-import todoist_handler  # Ensure this import is present and correct
 
-# Import the missing function again
-from update_task_helpers import update_task_duration
-
-# Import daily_scheduler to trigger planning and schedule_task_with_api
-from daily_scheduler import create_daily_schedule, schedule_task_with_api
+# import semantic_task_manager # Replaced by instruction-based flow
+# from update_task_helpers import update_task_duration # Replaced by instruction-based flow
+from daily_scheduler import create_daily_schedule  # Keep for trigger_daily_schedule
 
 logger = logging.getLogger(__name__)
 
 
-# --- Commands ---
+# --- Commands (start_command, cancel_command remain mostly the same, but clear new state) ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if config.TELEGRAM_USER_ID and user.id != config.TELEGRAM_USER_ID:
@@ -52,12 +49,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         rf"Hi, {user.mention_html()}! 👋 Send me tasks via text or voice.",
         reply_markup=ReplyKeyboardRemove(),
     )
-    # Remove state clearing related to ConversationHandler
-    # context.user_data.pop("clarification_state", None)
-    # return ConversationHandler.END # Remove return state
-    # Clear our custom states including skipped list
-    context.user_data.pop("waiting_for_duration", None)
-    context.user_data.pop("waiting_for_schedule_confirmation", None)
+    # Clear custom states
+    context.user_data.pop("pending_question", None)  # NEW state key
+    context.user_data.pop("waiting_for_schedule_confirmation", None)  # Keep for now
     context.user_data.pop("skipped_in_session", None)  # Clear skipped list
 
 
@@ -65,20 +59,19 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Cancels current clarification or suggestion dialog."""
     user = update.effective_user
     if config.TELEGRAM_USER_ID and user.id != config.TELEGRAM_USER_ID:
-        # return ConversationHandler.END # Remove return state
         return
 
     logger.info(f"User {user.id} cancelled the conversation.")
     await update.message.reply_text(
         "Okay, cancelled the current operation.", reply_markup=ReplyKeyboardRemove()
     )
-    # Clear our custom states including skipped list
-    context.user_data.pop("waiting_for_duration", None)
-    context.user_data.pop("waiting_for_schedule_confirmation", None)
+    # Clear custom states
+    context.user_data.pop("pending_question", None)  # NEW state key
+    context.user_data.pop("waiting_for_schedule_confirmation", None)  # Keep for now
     context.user_data.pop("skipped_in_session", None)  # Clear skipped list
 
 
-# --- Message handling ---
+# --- Message handling (handle_message extracts text/voice) ---
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:  # Return type is None now
@@ -141,15 +134,16 @@ async def handle_message(
         return None
 
     if text_to_analyze:
-        # process_text_input now returns None or raises exceptions
+        # --- REVISED: Call process_text_input which now handles instructions ---
         await process_text_input(
             update, context, text_to_analyze, source, conversation_history
         )
-        context.user_data["conversation_history"] = conversation_history[-10:]
+        context.user_data["conversation_history"] = conversation_history[
+            -10:
+        ]  # Keep history
 
-    # return None # No state to return
 
-
+# --- REVISED process_text_input ---
 async def process_text_input(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -159,248 +153,206 @@ async def process_text_input(
 ):
     await update.message.reply_chat_action("typing")
     chat_id = update.effective_chat.id
-    logger.debug(f"Processing text input: '{text}'")
+    logger.debug(f"Processing text input for instructions: '{text}'")
 
-    # Check if this is a response to a task duration clarification
-    if "waiting_for_duration" in context.user_data:
-        task_info = context.user_data.get("waiting_for_duration")
-        if task_info:
-            logger.info(
-                f"Detected duration response for task: {task_info['content']}"
-            )  # Log detection
-            try:
-                duration_minutes = await llm_handler.parse_duration_response(text)
+    pending_question_data = context.user_data.pop("pending_question", None)
+    pending_key = None
+    pending_context = None
+    if pending_question_data:
+        pending_key = pending_question_data.get("state_key")
+        pending_context = pending_question_data.get(
+            "context"
+        )  # Store any relevant context
+        logger.info(f"Processing user response for pending question: {pending_key}")
+    else:
+        logger.info("Processing new user request.")
 
-                if duration_minutes is not None and duration_minutes > 0:
+    # --- Get Instructions from LLM ---
+    try:
+        instructions = await llm_handler.get_instructions(
+            user_text=text,
+            source=source,
+            conversation_history=history,
+            pending_question_key=pending_key,
+            pending_question_context=pending_context,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get instructions from LLM: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Произошла ошибка при получении инструкций от LLM."
+        )
+        return  # Stop processing
+
+    if not instructions:
+        logger.warning("LLM returned no instructions.")
+        # Maybe send a default "I didn't understand" message?
+        # For now, just finish.
+        return
+
+    # --- Execute Instructions ---
+    logger.info(f"Executing {len(instructions)} instructions...")
+    for instruction in instructions:
+        instruction_type = instruction.get("instruction_type")
+        parameters = instruction.get("parameters", {})
+        logger.info(
+            f"Executing instruction: {instruction_type} with params: {parameters}"
+        )
+
+        try:
+            if instruction_type == "create_task":
+                if not parameters.get("content"):
+                    logger.warning("Skipping create_task: missing content.")
+                    continue
+
+                # Log before calling
+                logger.debug(
+                    f"Calling todoist_handler.create_task with params: {parameters}"
+                )
+                created_task = todoist_handler.create_task(
+                    content=parameters.get("content"),
+                    description=parameters.get("description"),
+                    due_string=parameters.get("due_string"),
+                    priority=parameters.get("priority"),
+                    project_id=parameters.get("project_id"),
+                    duration_minutes=parameters.get("duration_minutes"),
+                )
+                # Log the result
+                if created_task:
                     logger.info(
-                        f"LLM parsed duration: {duration_minutes} minutes. Updating task..."
+                        f"todoist_handler.create_task succeeded, created task ID: {created_task.id}"
                     )
-                    # Store task_id before potentially clearing state
-                    task_id_to_update = task_info.get("id")
-                    if not task_id_to_update:
-                        logger.error("Task ID missing in waiting_for_duration state.")
-                        await update.message.reply_text(
-                            "Ошибка: не найден ID задачи для обновления."
-                        )
-                        context.user_data.pop(
-                            "waiting_for_duration", None
-                        )  # Clear broken state
-                        return  # Return None implicitly
+                else:
+                    logger.error(
+                        f"todoist_handler.create_task failed for params: {parameters}"
+                    )
+                # LLM should generate reply_user instruction for confirmation
 
-                    # Clear state *before* calling update_task_duration which triggers rescheduling
-                    # This prevents the re-entrant scheduler call from seeing the old state
-                    logger.debug(
-                        "Clearing 'waiting_for_duration' state before updating task."
-                    )
-                    del context.user_data["waiting_for_duration"]
+            elif instruction_type == "update_task":
+                task_id = parameters.get("task_id")
+                if not task_id:
+                    logger.warning("Skipping update_task: missing task_id.")
+                    continue
 
-                    success = await update_task_duration(
-                        context.application,
-                        chat_id,
-                        task_id_to_update,  # Use stored task_id
-                        duration_minutes,
-                        context,
+                update_args = {
+                    k: v
+                    for k, v in parameters.items()
+                    if k != "task_id" and v is not None
+                }
+
+                # Handle potential removal logic if needed
+                if "due_string" in update_args and update_args["due_string"] == "":
+                    pass  # Let handler manage removal
+                if (
+                    "duration_minutes" in update_args
+                    and update_args["duration_minutes"] == 0
+                ):
+                    update_args["duration_minutes"] = None
+
+                if not update_args:
+                    logger.warning(
+                        f"Skipping update_task {task_id}: no update parameters provided."
                     )
-                    if success:
-                        logger.info(
-                            "Task duration updated successfully. Update function triggered rescheduling. Returning."
-                        )  # Log success return
-                        # No need to clear state again, already done
-                        return  # Return None implicitly
-                    else:
-                        logger.warning(
-                            "Update task duration failed. Informing user and returning."
-                        )  # Log update fail return
-                        await update.message.reply_text(
-                            "Не удалось обновить длительность в Todoist."
-                        )
-                        # State already cleared
-                        return  # Return None implicitly
+                    continue
+
+                # --- Add logging for the result ---
+                logger.debug(f"Calling todoist_handler.update_task for {task_id}...")
+                success = todoist_handler.update_task(task_id=task_id, **update_args)
+                logger.info(
+                    f"todoist_handler.update_task for {task_id} returned: {success}"
+                )  # Log result
+
+                if not success:
+                    logger.error(
+                        f"Failed to update task {task_id} via instruction (handler returned False): {update_args}"
+                    )
+                    # Optionally send error reply? Let LLM handle for now.
+                else:
+                    logger.info(f"Task {task_id} update successful via instruction.")
+                    # LLM should generate reply_user instruction for confirmation
+
+            elif instruction_type == "reply_user":
+                message_text = parameters.get("message_text")
+                if message_text:
+                    # --- Add logging after the send attempt ---
+                    await update.message.reply_text(message_text)
+                    logger.info(
+                        f"Sent reply to user: '{message_text[:50]}...'"
+                    )  # Log confirmation
+                else:
+                    logger.warning("Skipping reply_user: missing message_text.")
+
+            # --- Add ask_user logic ---
+            elif instruction_type == "ask_user":
+                question = parameters.get("question_text")
+                state_key = parameters.get("state_key")
+                if question and state_key:
+                    # Store state for the next message
+                    context.user_data["pending_question"] = {
+                        "state_key": state_key,
+                        # Store related_data as context for the LLM when processing the answer
+                        "context": parameters.get("related_data"),
+                    }
+                    logger.info(
+                        f"Asking user question, setting state key: {state_key}. Context: {parameters.get('related_data')}"
+                    )
+                    await update.message.reply_text(question)
+                    # IMPORTANT: Stop processing further instructions after asking
+                    return
                 else:
                     logger.warning(
-                        f"LLM could not parse duration from '{text}'. Asking again and returning."
-                    )  # Log parse fail return
-                    await update.message.reply_text(
-                        "Не удалось распознать длительность. Попробуйте указать число минут или часов (например, '45 минут', '2 часа', 'полтора часа')."
+                        "Skipping ask_user: missing question_text or state_key."
                     )
-                    # Keep state by *not* clearing it here
-                    return  # Return None implicitly
-            except Exception as e:
-                logger.error(
-                    f"Error processing duration response: {e}", exc_info=True
-                )  # Log exception return
-                await update.message.reply_text(
-                    "Произошла ошибка при обработке вашего ответа о длительности."
-                )
-                # Clear state on exception to avoid getting stuck
-                context.user_data.pop("waiting_for_duration", None)
-                return  # Return None implicitly
-        else:
-            logger.warning(
-                "'waiting_for_duration' key exists but task_info is missing/falsy."
-            )  # Edge case log
-            context.user_data.pop("waiting_for_duration", None)  # Clear broken state
 
-    # Check if waiting for schedule confirmation
-    if "waiting_for_schedule_confirmation" in context.user_data:
-        logger.warning(
-            "Received text while waiting for schedule confirmation button. Replying and returning."
-        )  # Log schedule conflict return
-        await update.message.reply_text(
-            "Пожалуйста, используйте кнопки 'Назначить' или 'Пропустить' для предложенной задачи."
-        )
-        return  # Return None implicitly
-
-    # --- Semantic Command Check ---
-    logger.debug(
-        "Input not a duration response or schedule conflict. Checking for semantic command..."
-    )
-    try:
-        # Check if the message is a semantic command
-        is_semantic, command_type = (
-            await semantic_task_manager.check_semantic_command_type(text)
-        )
-
-        if is_semantic:
-            # If it's a planning command, clear the skipped list for a new session
-            if command_type == "schedule_day":
+            # --- Add finish_request logic ---
+            elif instruction_type == "finish_request":
                 logger.info(
-                    "Detected 'schedule_day' command, clearing skipped_in_session list."
+                    "Finish request instruction received. Clearing pending state."
                 )
-                context.user_data.pop("skipped_in_session", None)
-
-            # Process the command (which might call create_daily_schedule)
-            processed = await semantic_task_manager.process_semantic_command(
-                update, context, text
-            )
-            if processed:
-                logger.info("Input handled as semantic command. Returning.")
-                history.append(f"Assistant: Processed semantic command: {text}")
-                context.user_data["conversation_history"] = history[-10:]
-                return  # Return None implicitly
-            else:
-                logger.warning("Semantic command detected but processing failed.")
-                # Fall through to regular analysis? Or stop? Let's stop for now.
-                await update.message.reply_text("Не удалось обработать команду.")
+                # Clear pending state if it wasn't already cleared by a response
+                context.user_data.pop("pending_question", None)
+                # End processing for this message
                 return
 
-    except Exception as e:
-        logger.error(f"Error processing semantic command: {e}", exc_info=True)
-        # Continue to regular analysis
+            else:
+                logger.warning(
+                    f"Unknown or unhandled instruction type received: {instruction_type}"
+                )
 
-    # --- Regular Task Analysis ---
-    logger.debug(
-        "Input not a semantic command. Proceeding with regular task analysis..."
-    )
-    tasks = llm_handler.analyze_text_batch(text, source, history)
-
-    if not tasks:
-        logger.warning(
-            f"LLM analysis returned no tasks for input: '{text}'. Informing user."
-        )
-        await update.message.reply_text(
-            "Не удалось проанализировать ваш запрос. Попробуйте переформулировать."
-            if any(char in text for char in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
-            else "Could not analyze your request. Please try rephrasing."
-        )
-        return  # Return None implicitly
-
-    first_clarification_asked = False
-    clarification_needed = False
-
-    # Process each task sequentially
-    for task in tasks:
-        source_text = task.get("source_text", text)
-        status = task.get("status")
-
-        if status == "complete":
-            logger.info(
-                f"LLM analyzed task as complete: {task.get('action')} (from: {source_text})"
+        except Exception as e:
+            logger.error(
+                f"Error executing instruction {instruction_type}: {e}", exc_info=True
             )
-            try:  # Add try-except block for safety
-                # --- FIX: Ensure todoist_handler is accessible ---
-                # The import should be at the top level, this call failed previously
-                created_task = todoist_handler.create_task(
-                    content=task.get("action"),
-                    description=task.get("details"),
-                    due_string=task.get(
-                        "start_time"
-                    ),  # Assuming start_time is used as due_string
-                    priority=task.get("priority"),
-                    project_id=task.get("project_id"),
-                    duration_minutes=task.get("estimated_duration_minutes"),
-                )
-                if created_task:
-                    project_name = "Входящие"  # Default
-                    # --- FIX: Ensure todoist_handler is accessible ---
-                    projects = todoist_handler.get_projects()
-                    for p in projects:
-                        if p["id"] == created_task.project_id:
-                            project_name = p["name"]
-                            break
-                    confirm_msg = await llm_handler.generate_response(
-                        prompt_type="task_creation_success",
-                        data={
-                            "content": created_task.content,
-                            "project_name": project_name,
-                            "due_string": (
-                                created_task.due.string
-                                if created_task.due
-                                else "без срока"
-                            ),
-                        },
-                    )
-                    await update.message.reply_text(confirm_msg or "Задача создана.")
-                else:
-                    fail_msg = await llm_handler.generate_response(
-                        prompt_type="task_creation_fail", data={}
-                    )
-                    await update.message.reply_text(
-                        fail_msg or "Не удалось создать задачу."
-                    )
-            except NameError as ne:
-                logger.error(
-                    f"NameError during task creation/project fetch: {ne}. Is 'todoist_handler' imported correctly?",
-                    exc_info=True,
-                )
-                await update.message.reply_text(
-                    "Произошла внутренняя ошибка при доступе к Todoist."
-                )
-            except Exception as e:
-                logger.error(
-                    f"Unexpected error during task creation: {e}", exc_info=True
-                )
-                await update.message.reply_text("Произошла ошибка при создании задачи.")
+            await update.message.reply_text(
+                f"Ошибка при выполнении инструкции: {instruction_type}."
+            )
+            context.user_data.pop("pending_question", None)  # Clear state on error
+            return
 
-        elif status == "incomplete":
-            clarification_needed = True
-            # If this is the first incomplete task, ask about it right away
-            if not first_clarification_asked:
-                question = task.get("clarification_question", "Could you clarify?")
-                task_action = task.get("action", "Задача")
-
-                await update.message.reply_text(f"📝 {task_action}: {question}")
-                first_clarification_asked = True
-                history.append(f"Assistant: {question}")
-                # Set state for duration clarification if that's the missing info
-                # This logic might need refinement based on actual missing_info
-                if "duration" in str(task.get("missing_info", [])).lower():
-                    context.user_data["waiting_for_duration"] = task  # Store task info
-                    logger.info(
-                        f"Set 'waiting_for_duration' state for incomplete task: {task_action}"
-                    )
-                # else: handle other types of clarification?
-                # return # Return None implicitly - stop after first question
-
-    logger.debug("Finished processing tasks from LLM analysis.")
+    # If loop finishes without finish_request or ask_user, clear state just in case
+    context.user_data.pop("pending_question", None)
+    logger.debug("Finished processing all instructions for the message.")
 
 
-# --- Callback Query Handler ---
+# --- Callback Query Handler (button_callback_handler) ---
+# This needs review. Schedule confirmation buttons might conflict with the ask_user flow.
+# For now, keep it, but prioritize the ask_user/instruction flow.
+# If an ask_user is pending, maybe ignore button presses?
 async def button_callback_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handles button presses for schedule suggestions."""
     query = update.callback_query
+    # --- NEW: Check if waiting for text response ---
+    if "pending_question" in context.user_data:
+        logger.warning("Ignoring button press while waiting for text clarification.")
+        try:
+            await query.answer("Пожалуйста, сначала ответьте на вопрос текстом.")
+        except Exception as e:
+            logger.warning(
+                f"Failed to answer callback query during pending_question: {e}"
+            )
+        return
+
     # Answer the callback query immediately to remove the "loading" state on the button
     try:
         await query.answer()

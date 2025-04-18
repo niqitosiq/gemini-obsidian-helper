@@ -58,44 +58,18 @@ def get_projects() -> list[dict[str, str]]:
         return []
 
 
-def get_tasks(start_date: datetime, end_date: datetime) -> list[Task]:
-    """Gets list of active tasks in given date range."""
+# --- MODIFIED: Remove date range filtering to get all active tasks ---
+def get_tasks() -> list[Task]:
+    """Gets list of all active (non-completed) tasks."""
     client = _init_api()
     if not client:
         return []
     try:
-        logger.debug("Requesting active tasks from Todoist API...")
+        logger.debug("Requesting all active tasks from Todoist API...")
         all_active_tasks = client.get_tasks()
         logger.info(f"Retrieved {len(all_active_tasks)} active tasks from Todoist.")
-
-        tasks_in_range = []
-        for task in all_active_tasks:
-            if task.due and task.due.datetime:
-                try:
-                    task_due_dt = datetime.fromisoformat(
-                        task.due.datetime.replace("Z", "+00:00")
-                    )
-                    task_due_dt_naive = task_due_dt.replace(tzinfo=None)
-                    if start_date <= task_due_dt_naive < end_date:
-                        tasks_in_range.append(task)
-                except ValueError:
-                    logger.warning(
-                        f"Could not parse date for task '{task.content}': {task.due.datetime}"
-                    )
-            elif task.due and task.due.date:
-                try:
-                    task_due_d = datetime.fromisoformat(task.due.date).date()
-                    if start_date.date() <= task_due_d < end_date.date():
-                        pass  # Skip tasks without specific time for now
-                except ValueError:
-                    logger.warning(
-                        f"Could not parse date for task '{task.content}': {task.due.date}"
-                    )
-
-        logger.debug(
-            f"Found {len(tasks_in_range)} tasks with deadline in range {start_date} - {end_date}."
-        )
-        return tasks_in_range
+        # No date filtering needed here, get_tasks() returns active ones
+        return all_active_tasks
     except Exception as e:
         logger.error(f"Error getting tasks from Todoist: {e}", exc_info=True)
         return []
@@ -155,3 +129,67 @@ def create_task(
     except Exception as e:
         logger.error(f"Error creating task in Todoist: {e}", exc_info=True)
         return None
+
+
+def update_task(task_id: str, **kwargs) -> bool:
+    """
+    Updates a task in Todoist.
+
+    Args:
+        task_id: The ID of the task to update.
+        **kwargs: Keyword arguments corresponding to Task attributes
+                  (e.g., content, due_string, duration_minutes, priority,
+                   description, project_id). Use None or "" to remove optional fields.
+
+    Returns:
+        True if update was successful, False otherwise.
+    """
+    # --- FIX: Call the correct init function ---
+    api = _init_api()  # Use _init_api() instead of setup_todoist_api()
+    if not api:
+        return False
+
+    logger.info(f"Attempting to update task {task_id} with args: {kwargs}")
+    try:
+        # Prepare data, handle removal logic carefully based on API spec
+        update_data = {}
+        for k, v in kwargs.items():
+            if k == "due_string":
+                # API might expect due={'string': '...'} or due_string='...'
+                # To remove: due={'string': None} or due_string="" ? Check API docs.
+                # Assuming direct due_string works for now, pass "" for removal.
+                update_data["due_string"] = (
+                    v if v is not None else ""
+                )  # Pass "" to try removing
+            elif k == "duration_minutes":
+                if v is None or v == 0:
+                    update_data["duration"] = None
+                    update_data["duration_unit"] = None
+                else:
+                    update_data["duration"] = v
+                    update_data["duration_unit"] = "minute"
+            elif v is not None:  # Copy other non-None arguments
+                update_data[k] = v
+
+        if not update_data:
+            logger.warning(f"No valid update arguments provided for task {task_id}")
+            return False
+
+        # Make the API call
+        is_success = api.update_task(task_id=task_id, **update_data)
+
+        if (
+            is_success
+        ):  # update_task returns True on success, raises exception on failure
+            logger.info(f"Successfully updated task {task_id}")
+            return True
+        else:
+            # This path might not be reachable if exceptions are raised on failure
+            logger.warning(
+                f"Todoist API reported failure updating task {task_id} (returned False)"
+            )
+            return False
+
+    except Exception as e:
+        logger.error(f"Error updating task {task_id}: {e}", exc_info=True)
+        return False
