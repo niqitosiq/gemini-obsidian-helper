@@ -28,11 +28,14 @@ WORK_DAYS = [
     int(day.strip()) for day in _work_days_str.split(",") if day.strip().isdigit()
 ]  # 1=Mon, 7=Sun
 GEMINI_CONTEXT_LEVEL = os.getenv("GEMINI_CONTEXT_LEVEL", "maximal")
-KNOWLEDGE_BASE_PATH = os.getenv("KNOWLEDGE_BASE_PATH", "knowledge_base.md")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 CLARIFICATION_TIMEOUT_SECONDS = int(
     os.getenv("CLARIFICATION_TIMEOUT_SECONDS", 300)
 )  # 5 minutes
+
+# --- Knowledge Base Settings ---
+KNOWLEDGE_BASE_ENABLED = True
+KNOWLEDGE_BASE_FILE = "knowledge_base.md"
 
 # Validation of critical configurations
 if not TELEGRAM_BOT_TOKEN:

@@ -1,51 +1,53 @@
 import logging
-import config
+import os
 from datetime import datetime
-from typing import Union
+import config
 
 logger = logging.getLogger(__name__)
-KB_FILE = config.KNOWLEDGE_BASE_PATH
 
 
-def log_entry(entry_type: str, content: Union[str, dict]) -> None:
-    """Adds an entry to the knowledge base file."""
+# --- MODIFIED: Function signature and formatting ---
+def log_entry(source: str, message: str):
+    """Logs a message entry to the knowledge base file in chat format."""
+    if not config.KNOWLEDGE_BASE_ENABLED:
+        return
+
     try:
-        with open(KB_FILE, "a", encoding="utf-8") as f:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"## {entry_type.capitalize()} [{timestamp}]\n")
-            if isinstance(content, dict):
-                for key, value in content.items():
-                    f.write(f"- {key}: {value}\n")
-            else:
-                processed_content = " ".join(content.splitlines())
-                f.write(f"- {processed_content}\n")
-            f.write("\n")
-        logger.debug(f"Entry '{entry_type}' added to knowledge base.")
-    except IOError as e:
-        logger.error(
-            f"Error writing to knowledge base file {KB_FILE}: {e}", exc_info=True
-        )
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Format as Markdown heading with timestamp, source, and message
+        log_line = f"## [{timestamp}] {source}: {message}\n\n"
+
+        with open(config.KNOWLEDGE_BASE_FILE, "a", encoding="utf-8") as f:
+            f.write(log_line)
+        # logger.debug(f"Logged to knowledge base: {source}: {message[:50]}...") # Optional: keep debug log
+    except Exception as e:
+        logger.error(f"Failed to write to knowledge base: {e}", exc_info=True)
 
 
-def read_knowledge_base(context_level: str = config.GEMINI_CONTEXT_LEVEL) -> str:
-    """Reads knowledge base according to context level."""
-    if context_level == "none":
-        return ""
+# --- MODIFIED: read_knowledge_base remains largely the same, but might need adjustment
+# if the context assembly expects the old format. For now, keep it simple. ---
+def read_knowledge_base() -> str:
+    """Reads the entire content of the knowledge base file."""
+    if not config.KNOWLEDGE_BASE_ENABLED or not os.path.exists(
+        config.KNOWLEDGE_BASE_FILE
+    ):
+        return None
     try:
-        with open(KB_FILE, "r", encoding="utf-8") as f:
-            content = f.read()
-        logger.debug(f"Knowledge base read ({len(content)} characters).")
+        with open(config.KNOWLEDGE_BASE_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"Failed to read knowledge base: {e}", exc_info=True)
+        return None
 
-        if context_level in ["maximal", "with_full_kb", "with_kb_sections", "basic"]:
-            return content
-        else:
-            return ""
 
-    except FileNotFoundError:
-        logger.warning(
-            f"Knowledge base file {KB_FILE} not found. Will be created on first write."
-        )
-        return ""
-    except IOError as e:
-        logger.error(f"Error reading knowledge base file {KB_FILE}: {e}", exc_info=True)
-        return ""
+def clear_knowledge_base():
+    """Clears the knowledge base file."""
+    if not config.KNOWLEDGE_BASE_ENABLED:
+        logger.warning("Knowledge base is disabled, cannot clear.")
+        return
+    try:
+        with open(config.KNOWLEDGE_BASE_FILE, "w", encoding="utf-8") as f:
+            f.write("")  # Write empty string to clear
+        logger.info("Knowledge base cleared.")
+    except Exception as e:
+        logger.error(f"Failed to clear knowledge base: {e}", exc_info=True)

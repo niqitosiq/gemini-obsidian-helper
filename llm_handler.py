@@ -1,4 +1,19 @@
 import logging
+import json
+import os
+from typing import Optional, Union, List, Dict, Any
+from datetime import datetime
+import config
+import knowledge_base
+import todoist_handler
+from todoist_api_python.models import Task  # Убедимся, что Task импортирован
+
+# --- NEW: Import functions from daily_scheduler ---
+from daily_scheduler import (
+    get_today_tasks,
+    calculate_available_time_blocks,
+    get_day_type,
+)
 
 # import google.generativeai as genai # Old import
 import google.genai as genai  # New import
@@ -10,13 +25,6 @@ from google.genai import (
 
 # --- NEW: Import specific error type ---
 from google.genai import errors as genai_errors
-import json
-import os
-from typing import Optional, Union, List, Dict, Any
-from datetime import datetime
-import config
-import knowledge_base
-import todoist_handler
 
 
 logger = logging.getLogger(__name__)
@@ -66,8 +74,9 @@ def assemble_context(
         config.GEMINI_CONTEXT_LEVEL in ["maximal", "with_conversation"]
         and conversation_history
     ):
-        context_parts.append("- Current conversation history:")
-        context_parts.extend([f"  - {msg}" for msg in conversation_history])
+        context_parts.append("- Current conversation history (last 10 turns):")
+        # History already contains prefixes like "User: " and "Assistant: "
+        context_parts.extend([f"  {msg}" for msg in conversation_history])
 
     projects = todoist_handler.get_projects()
     if projects:
@@ -78,25 +87,70 @@ def assemble_context(
         context_parts.append("- Todoist Projects: Could not fetch.")
 
     # --- NEW: Add Active Tasks to Context ---
-    active_tasks = todoist_handler.get_tasks()  # Call the modified function
+    active_tasks = todoist_handler.get_tasks()  # Returns list[Task]
     if active_tasks:
         context_parts.append("- Active Todoist Tasks:")
-        # Limit the number of tasks shown to avoid excessive context length?
-        # For now, show all, but consider limiting later if needed.
         for task in active_tasks:
+            # --- FIX: Add type check and safer attribute access ---
+            if not isinstance(task, Task):
+                logger.warning(
+                    f"Skipping non-Task item found in active_tasks list: {type(task)} - {task}"
+                )
+                continue
+
             due_info = ""
-            if task.due:
+            # Check if due attribute exists and is not None before accessing sub-attributes
+            if hasattr(task, "due") and task.due and hasattr(task.due, "string"):
                 due_info = f", Due: {task.due.string}"
             duration_info = ""
-            if task.duration:
-                duration_info = (
-                    f", Duration: {task.duration.amount} {task.duration.unit}"
-                )
+            # Check if duration attribute exists and is not None before accessing sub-attributes
+            if hasattr(task, "duration") and task.duration:
+                if hasattr(task.duration, "amount") and hasattr(task.duration, "unit"):
+                    duration_info = (
+                        f", Duration: {task.duration.amount} {task.duration.unit}"
+                    )
+                else:
+                    logger.debug(
+                        f"Task {getattr(task, 'id', 'N/A')} has duration attribute, but not amount/unit: {task.duration}"
+                    )
+
+            task_id_str = str(getattr(task, "id", "Unknown ID"))
+            task_content_str = str(getattr(task, "content", "Unknown Content"))
+
             context_parts.append(
-                f"  - ID: {task.id}, Content: '{task.content}'{due_info}{duration_info}"
+                f"  - ID: {task_id_str}, Content: '{task_content_str}'{due_info}{duration_info}"
             )
+            # --- END FIX ---
     else:
         context_parts.append("- Active Todoist Tasks: None found or error fetching.")
+    # --- END NEW ---
+
+    # --- NEW: Add Available Time Blocks ---
+    try:
+        today = datetime.now().date()
+        day_type = get_day_type(today)
+        # Get tasks already scheduled *with specific times* today
+        today_scheduled_tasks = get_today_tasks()  # Function from daily_scheduler
+        available_blocks = calculate_available_time_blocks(
+            today_scheduled_tasks, day_type
+        )  # Function from daily_scheduler
+
+        if available_blocks:
+            context_parts.append("- Available Time Blocks Today:")
+            for block in available_blocks:
+                start_str = block["start"].strftime("%H:%M")
+                end_str = block["end"].strftime("%H:%M")
+                duration = int(block.get("duration_minutes", 0))
+                context_parts.append(f"  - {start_str} to {end_str} ({duration} min)")
+        else:
+            context_parts.append(
+                "- Available Time Blocks Today: None found or error calculating."
+            )
+    except Exception as e:
+        logger.error(
+            f"Error calculating available time blocks for context: {e}", exc_info=True
+        )
+        context_parts.append("- Available Time Blocks Today: Error calculating.")
     # --- END NEW ---
 
     context_parts.append("[END CONTEXT]\\n")
@@ -326,9 +380,9 @@ async def get_instructions(
             {"instruction_type": "finish_request", "parameters": {}},
         ]
 
-    # Assemble context (now includes active tasks)
+    # Assemble context (now includes active tasks AND available blocks)
     full_context = assemble_context(source, conversation_history)
-    if pending_question_key:
+    if pending_question_key:  # Check using the argument name
         # Include task_id in context if available from the pending question
         task_id_context = ""
         if isinstance(pending_question_context, dict) and pending_question_context.get(
@@ -338,60 +392,62 @@ async def get_instructions(
                 f"\n- Related Task ID: {pending_question_context['task_id']}"
             )
 
-        full_context += f"\n[PENDING QUESTION CONTEXT]\n- State Key: {pending_key}{task_id_context}\n- Details: {json.dumps(pending_question_context, ensure_ascii=False)}\n- User's Answer: {user_text}\n[END PENDING QUESTION CONTEXT]\n"
+        # --- FIX: Use the correct argument name 'pending_question_key' ---
+        full_context += f"\n[PENDING QUESTION CONTEXT]\n- State Key: {pending_question_key}{task_id_context}\n- Details: {json.dumps(pending_question_context, ensure_ascii=False)}\n- User's Answer: {user_text}\n[END PENDING QUESTION CONTEXT]\n"
         user_prompt_header = "USER ANSWER TO PENDING QUESTION:"
 
     else:
         user_prompt_header = "USER REQUEST:"
 
-    system_instruction = """You are an AI assistant controlling a bot. Your goal is to break down the user's request (or their answer to a previous question) into a sequence of explicit instructions for the bot to execute.
+    system_instruction = """You are an AI assistant controlling a bot. Your goal is to break down the user's request (or their answer to a previous question) into a sequence of explicit instructions for the bot to execute. Always address the user as "Хозяин" in your replies and questions.
 
-Analyze the request/answer considering the provided CONTEXT (Knowledge Base, projects, Active Todoist Tasks, time, pending question context if any).
+Analyze the request/answer considering the provided CONTEXT (Knowledge Base, projects, Active Todoist Tasks, Available Time Blocks Today, time, conversation history, pending question context if any).
 
-Generate a JSON array of instruction objects. Each object must have 'instruction_type' and 'parameters'.
+Generate a JSON array of instruction objects. Each object must have 'instruction_type' and 'parameters'. Use relevant emojis in your replies (reply_user, ask_user) to make them friendlier (e.g., ✅, 🗓️, 🤔, ❌, 👌).
 
 Available Instruction Types:
 
-1.  `create_task`: Creates a new task in Todoist. IMPORTANT: Use this instruction ONLY if you have sufficient details (content, due date/time, optionally duration). If key details like due date/time are missing and not implied by context (e.g., user didn't say 'today'), use `ask_user` first.
+1.  `create_task`: Creates a new task in Todoist.
     - `parameters`:
-        - `content` (str): Task title. Choose a clear and concise name. Include key details like duration if helpful (e.g., 'Велопрогулка 30 мин', 'Проверка почты'). Avoid generic names like 'задача' or 'поездка'.
-        - `project_id` (str, optional): ID from CONTEXT. Use 'inbox' if unsure.
-        - `due_string` (str, optional): Use Todoist natural language. **Be specific with time (e.g., "tomorrow 9am", "в пятницу 18:00", "2025-05-10 10:00"). Avoid vague terms like "вечером", "утром" unless the user explicitly uses them.** IMPORTANT: Only use recurrence patterns (...) if the user explicitly asks for repetition (...). If the request doesn't clearly state recurrence, create a task for a single instance (...). Do not default to 'today' unless explicitly stated by the user.
-        - `priority` (int, optional): 1 (P1) to 4 (P4). Default 4.
-        - `duration_minutes` (int, optional): Task duration in minutes. Ensure this matches the task name if duration is included there.
-        - `description` (str, optional): Task details.
+        - `content` (str): Concise task title.
+        - `project_id` (str, optional): ID from CONTEXT.
+        - `due_string` (str, optional): Todoist natural language with specific time (unless "без времени").
+        - `priority` (int, optional): 1-4.
+        - `duration_minutes` (int, optional): Duration.
+        - `description` (str, optional): Detailed description/summary.
 
-2.  `update_task`: Modifies an existing task in Todoist.
+2.  `update_task`: Modifies an existing task in Todoist. IMPORTANT: CANNOT change the task's project (`project_id`).
     - `parameters`:
-        - `task_id` (str): The ID of the task to update. **Crucial! Find the correct task ID by matching the user's request with the 'Active Todoist Tasks' list provided in the CONTEXT. If you cannot uniquely identify the task, use `ask_user`. Do NOT guess or use 'unknown'.**
-        - `content` (str, optional): New task title.
-        - `due_string` (str, optional): New due date/time string. Use Todoist format. **Be specific with time (e.g., "tomorrow 9am", "в пятницу 18:00", "2025-05-10 10:00"). Avoid vague terms like "вечером", "утром".** Set to empty string "" to remove due date.
-        - `duration_minutes` (int, optional): New duration in minutes. Set to 0 or null to remove duration.
-        - `description` (str, optional): New description.
+        - `task_id` (str): ID of the task.
+        - `content` (str, optional): New concise title.
+        - `due_string` (str, optional): New due date/time (must include time unless removing).
+        - `duration_minutes` (int, optional): New duration.
+        - `description` (str, optional): New detailed description.
         - `priority` (int, optional): New priority (1-4).
-        - `project_id` (str, optional): New project ID.
 
 3.  `reply_user`: Sends a message back to the user.
     - `parameters`:
-        - `message_text` (str): The message to send. Use this to confirm actions taken (like task creation/update) or to explain issues.
+        - `message_text` (str): The message to send. **CRITICAL: After a successful `create_task` or `update_task`, this message MUST provide a detailed confirmation. It should explicitly state what task was created/updated (using its content/title) and mention the key fields that were set or changed (e.g., "✅ Хозяин, создала задачу 'Купить кабель' на завтра 9:00 с приоритетом P2 в проекте 'Work'.", or "✅ Хозяин, обновила задачу 'Позвонить в банк': установила срок на сегодня 15:00 и приоритет P1.").** Use for errors, proposing plans, or explaining limitations too. Start replies with "Хозяин, ..." where appropriate.
 
-4.  `ask_user`: Asks the user a question to get missing information. Use this ONLY if information is absolutely necessary to proceed and cannot be reasonably assumed.
+4.  `ask_user`: Asks the user a question for missing info OR to confirm a plan.
     - `parameters`:
-        - `question_text` (str): The question for the user. Use this if `create_task` lacks due date/time (e.g., "На когда запланировать 'Купить шпаклевку'?"). Also use if the `task_id` for `update_task` is unclear or ambiguous based on the context (e.g., "Какую из задач 'Выпить пиво' вы хотите перенести?").
-        - `state_key` (str): A unique key describing what you are asking for (e.g., "clarify_due_date_for_task", "clarify_task_for_update", "get_duration_for_report"). The user's next message will be treated as the answer related to this key.
-        - `related_data` (dict, optional): Include relevant data like the task content being clarified or potential task matches.
+        - `question_text` (str): The question (e.g., 🤔 "Хозяин, на какое время запланировать 'Задачу Х'?", 🤔 "Хозяин, подтверждаете предложенный план?").
+        - `state_key` (str): Unique key (e.g., "clarify_due_time", "confirm_reschedule_plan").
+        - `related_data` (dict, optional): Context for the question (e.g., task details, proposed plan). **When state_key is "confirm_reschedule_plan", this MUST contain the proposed plan details.**
 
-5.  `finish_request`: Signals that the current user request has been fully processed or cannot be processed further. MUST be the LAST instruction in the array if used.
+5.  `finish_request`: Signals the end of processing. MUST be the LAST instruction.
     - `parameters`: {}
 
 Workflow:
-- Analyze the user's input.
-- Task Creation Flow: Check for details, use `create_task` or `ask_user`.
-- Task Update Flow: Identify `task_id` from CONTEXT, use `update_task` or `ask_user`.
-- After `create_task` or `update_task`, usually add `reply_user` for confirmation.
-- If clarification needed via `ask_user`, stop and wait.
-- Always conclude with `finish_request`.
-- If input unclear, use `reply_user` to explain and then `finish_request`.
+- Analyze input and context. Address user as "Хозяин".
+- **Generate Action:** If creating or updating, generate the `create_task` or `update_task` instruction.
+- **Generate DETAILED Confirmation:** Immediately after a `create_task` or `update_task` instruction, you MUST generate a `reply_user` instruction that summarizes the action taken, mentioning the task content and the specific parameters (due_string, priority, project_id for creation) that were included in the preceding action instruction.
+- **Task Content:** Generate concise `content` and put details/summary in `description`.
+- **Task Moving Request:** Explain limitation via `reply_user`, then `finish_request`.
+- **Time Clarification:** Use `ask_user` (`state_key="clarify_due_time"`) if only date is given.
+- **Handling Vague Reschedule/Distribution Requests:** Attempt Self-Scheduling, propose plan via `reply_user`, ask for confirmation via `ask_user` (`state_key="confirm_reschedule_plan"`). If fails, ask for guidance.
+- **Handling Confirmation ("confirm_reschedule_plan"):** Execute plan via `update_task`, generate DETAILED confirmation via `reply_user`, then `finish_request`.
+- Always conclude with `finish_request` after the final user-facing message (reply or ask) for a given request sequence.
 
 Respond STRICTLY with a JSON array of instruction objects. Ensure the JSON is valid.
 """

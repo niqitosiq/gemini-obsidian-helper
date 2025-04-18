@@ -1,17 +1,18 @@
 import logging
-import asyncio
-from datetime import datetime, timedelta, time
-from typing import List, Tuple, Dict, Any, Optional
-import math  # Add math import for ceiling
-
-# Add InlineKeyboardButton, InlineKeyboardMarkup
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from datetime import datetime, time, timedelta, date
+from typing import List, Dict, Optional, Tuple  # Added Tuple
 import todoist_handler
-import scheduler  # Keep for DEFAULT_DURATION_MINUTES potentially
-import llm_handler  # Import llm_handler
 import config
-from utils import is_working_time
+import utils  # Assuming utils.py has is_working_time
+import math  # Added math for rounding
+import asyncio  # Added asyncio for sleep
+import llm_handler  # Added llm_handler import
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup  # Added button imports
+from typing import Optional, Union, List, Dict, Any
+from todoist_api_python.models import Task  # Ensure Task is imported
+
+# --- FIX: Import ContextTypes ---
+from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
 
@@ -253,79 +254,34 @@ def get_day_type(date: datetime.date) -> str:
     return WORKDAY
 
 
-def get_today_tasks() -> List[Dict[str, Any]]:
-    """Get tasks that are already scheduled for today."""
-    today = datetime.now().date()
-    tomorrow = today + timedelta(days=1)
+def get_today_tasks() -> list[todoist_handler.Task]:
+    """Fetches ALL active tasks and filters for those scheduled today with specific times."""
+    logger.debug("Fetching all active tasks to filter for today's schedule...")
+    try:
+        all_tasks = todoist_handler.get_tasks()  # Should now return list[Task]
 
-    # Get tasks from Todoist
-    raw_tasks = todoist_handler.get_tasks(
-        start_date=datetime.combine(today, time(0, 0)),
-        end_date=datetime.combine(tomorrow, time(0, 0)),
-    )
-
-    # Convert to simplified format with start and end times
-    today_tasks = []
-    for task in raw_tasks:
-        if task.due and task.due.datetime:
-            try:
-                task_start = datetime.fromisoformat(
-                    task.due.datetime.replace("Z", "+00:00")
-                ).replace(tzinfo=None)
-
-                # Get duration from task if available
-                duration_minutes = None
-                # Try different ways to access duration based on Todoist API structure
-                try:
-                    # First try: duration might be a direct attribute
-                    if hasattr(task, "duration_minutes"):
-                        duration_minutes = task.duration_minutes
-                    # Second try: duration might be in the task.duration property
-                    elif hasattr(task, "duration"):
-                        if isinstance(task.duration, dict):
-                            # It might be a dictionary with amount and unit
-                            if "amount" in task.duration and "unit" in task.duration:
-                                amount = task.duration["amount"]
-                                unit = task.duration["unit"]
-                                if unit == "minute":
-                                    duration_minutes = amount
-                                elif unit == "hour":
-                                    duration_minutes = amount * 60
-                        # It might have value/unit properties
-                        elif hasattr(task.duration, "value") and hasattr(
-                            task.duration, "unit"
-                        ):
-                            if task.duration.unit == "minute":
-                                duration_minutes = task.duration.value
-                            elif task.duration.unit == "hour":
-                                duration_minutes = task.duration.value * 60
-                        # It might be a direct value
-                        elif isinstance(task.duration, (int, float)):
-                            duration_minutes = task.duration
-                except Exception as e:
-                    logger.debug(f"Could not extract duration for task {task.id}: {e}")
-
-                # Default to standard duration if not specified
-                if not duration_minutes:
-                    duration_minutes = scheduler.DEFAULT_DURATION_MINUTES
-
-                task_end = task_start + timedelta(minutes=duration_minutes)
-
-                today_tasks.append(
-                    {
-                        "id": task.id,
-                        "content": task.content,
-                        "start_time": task_start,
-                        "end_time": task_end,
-                        "duration_minutes": duration_minutes,
-                    }
+        today_date = datetime.now().date()
+        tasks_with_time_today = []
+        for task in all_tasks:
+            # --- FIX: Add type check ---
+            if not isinstance(task, Task):
+                logger.warning(
+                    f"Skipping non-Task item in get_today_tasks loop: {type(task)}"
                 )
-            except (ValueError, AttributeError) as e:
-                logger.warning(f"Error processing task {task.id}: {e}")
+                continue
+            # --- END FIX ---
 
-    # Sort by start time
-    today_tasks.sort(key=lambda x: x["start_time"])
-    return today_tasks
+            # Original filtering logic
+            if task.due and task.due.date == str(today_date) and task.due.datetime:
+                tasks_with_time_today.append(task)
+
+        logger.info(
+            f"Found {len(tasks_with_time_today)} tasks with specific due times today after filtering."
+        )
+        return tasks_with_time_today
+    except Exception as e:
+        logger.error(f"Error fetching or filtering today's tasks: {e}", exc_info=True)
+        return []
 
 
 def calculate_available_time_blocks(
