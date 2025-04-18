@@ -107,23 +107,37 @@ def create_task(
     priority: Optional[int] = None,
     project_id: Optional[str] = None,
     description: Optional[str] = None,
+    duration_minutes: Optional[int] = None,
 ) -> Optional[Task]:
     """Creates a new task in Todoist."""
     client = _init_api()
     if not client:
         return None
     try:
+        # Prepare task parameters
+        task_params = {
+            "content": content,
+            "due_string": due_string,
+            "priority": priority,
+            "description": description,
+        }
+
+        # Add project_id if it's not 'inbox'
+        if project_id and project_id != "inbox":
+            task_params["project_id"] = project_id
+
+        # Add duration if specified
+        if duration_minutes is not None:
+            task_params["duration"] = duration_minutes
+            task_params["duration_unit"] = "minute"
+
         logger.info(
             f"Creating task in Todoist: '{content[:50]}...' "
-            f"Project: {project_id}, Due: {due_string}, Priority: {priority}"
+            f"Project: {project_id}, Due: {due_string}, Priority: {priority}, "
+            f"Duration: {duration_minutes} minutes"
         )
-        task = client.add_task(
-            content=content,
-            due_string=due_string,
-            priority=priority,
-            project_id=project_id if project_id and project_id != "inbox" else None,
-            description=description,
-        )
+
+        task = client.add_task(**task_params)
         logger.info(f"Task successfully created in Todoist, ID: {task.id}")
         from knowledge_base import log_entry
 
