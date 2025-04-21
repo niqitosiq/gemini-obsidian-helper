@@ -214,9 +214,13 @@ Return response STRICTLY in JSON format.
                 types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     response_mime_type="application/json",
+                    max_output_tokens=20000,  # Set maximum output tokens to 20,000
                 )
                 if system_instruction
-                else types.GenerateContentConfig(response_mime_type="application/json")
+                else types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    max_output_tokens=20000,  # Set maximum output tokens to 20,000
+                )
             ),
         )
         logger.debug(f"Received Gemini response: {response.text}")
@@ -403,6 +407,10 @@ async def get_instructions(
 
 Analyze the request/answer considering the provided CONTEXT (Knowledge Base, projects, Active Todoist Tasks, Available Time Blocks Today, time, conversation history, pending question context if any).
 
+**Subtask Handling:**
+- Recognize subtasks based on indentation in the user's input (lines starting with spaces or tabs after a non-indented line).
+- When generating `create_task` instructions, if a task is identified as a subtask of the immediately preceding task in the input structure, add `"is_subtask_of_previous": true` to its `parameters`. The execution logic will handle linking it to the parent task ID.
+
 Generate a JSON array of instruction objects. Each object must have 'instruction_type' and 'parameters'. Use relevant emojis in your replies (reply_user, ask_user) to make them friendlier (e.g., ✅, 🗓️, 🤔, ❌, 👌).
 
 Available Instruction Types:
@@ -415,6 +423,7 @@ Available Instruction Types:
         - `priority` (int, optional): 1-4.
         - `duration_minutes` (int, optional): Duration.
         - `description` (str, optional): Detailed description/summary.
+        - `is_subtask_of_previous` (bool, optional): Set to `true` if this task was indented under the previous task in the user input. The bot will automatically add the correct `parent_id`.
 
 2.  `update_task`: Modifies an existing task in Todoist. IMPORTANT: CANNOT change the task's project (`project_id`).
     - `parameters`:
@@ -439,9 +448,9 @@ Available Instruction Types:
     - `parameters`: {}
 
 Workflow:
-- Analyze input and context. Address user as "Хозяин".
-- **Generate Action:** If creating or updating, generate the `create_task` or `update_task` instruction.
-- **Generate DETAILED Confirmation:** Immediately after a `create_task` or `update_task` instruction, you MUST generate a `reply_user` instruction that summarizes the action taken, mentioning the task content and the specific parameters (due_string, priority, project_id for creation) that were included in the preceding action instruction.
+- Analyze input and context. Address user as "Хозяин". Detect indented lines as subtasks.
+- **Generate Action:** If creating or updating, generate the `create_task` or `update_task` instruction. Add `is_subtask_of_previous: true` for subtasks.
+- **Generate DETAILED Confirmation:** Immediately after a `create_task` or `update_task` instruction, you MUST generate a `reply_user` instruction that summarizes the action taken, mentioning the task content and the specific parameters (due_string, priority, project_id for creation) that were included in the preceding action instruction. For subtasks, mention they were added under the parent.
 - **Task Content:** Generate concise `content` and put details/summary in `description`.
 - **Task Moving Request:** Explain limitation via `reply_user`, then `finish_request`.
 - **Time Clarification:** Use `ask_user` (`state_key="clarify_due_time"`) if only date is given.
@@ -472,6 +481,7 @@ Respond STRICTLY with a JSON array of instruction objects. Ensure the JSON is va
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
+                max_output_tokens=20000,  # Set maximum output tokens to 20,000
             ),
         )
         logger.debug(f"Received LLM response for instructions: {response.text}")

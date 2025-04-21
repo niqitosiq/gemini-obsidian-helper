@@ -191,6 +191,10 @@ async def process_text_input(
 
     # --- Execute Instructions ---
     logger.info(f"Executing {len(instructions)} instructions...")
+    last_created_task_id: Optional[str] = (
+        None  # <-- Track last created task ID for subtasks
+    )
+
     for instruction in instructions:
         instruction_type = instruction.get("instruction_type")
         parameters = instruction.get("parameters", {})
@@ -204,29 +208,51 @@ async def process_text_input(
                     logger.warning("Skipping create_task: missing content.")
                     continue
 
+                # Prepare parameters for todoist_handler
+                task_creation_params = {
+                    "content": parameters.get("content"),
+                    "description": parameters.get("description"),
+                    "due_string": parameters.get("due_string"),
+                    "priority": parameters.get("priority"),
+                    "project_id": parameters.get("project_id"),
+                    "duration_minutes": parameters.get("duration_minutes"),
+                }
+
+                # --- Add parent_id if it's a subtask and parent exists ---
+                is_subtask = parameters.get("is_subtask_of_previous", False)
+                if is_subtask and last_created_task_id:
+                    task_creation_params["parent_id"] = last_created_task_id
+                    logger.info(f"Adding parent_id {last_created_task_id} for subtask.")
+                elif is_subtask and not last_created_task_id:
+                    logger.warning(
+                        "Instruction indicated subtask, but no parent task ID available. Creating as top-level task."
+                    )
+                # --- End subtask logic ---
+
                 logger.debug(
-                    f"Calling todoist_handler.create_task with params: {parameters}"
+                    f"Calling todoist_handler.create_task with params: {task_creation_params}"
                 )
-                created_task = todoist_handler.create_task(
-                    content=parameters.get("content"),
-                    description=parameters.get("description"),
-                    due_string=parameters.get("due_string"),
-                    priority=parameters.get("priority"),
-                    project_id=parameters.get("project_id"),
-                    duration_minutes=parameters.get("duration_minutes"),
-                )
+                created_task = todoist_handler.create_task(**task_creation_params)
+
                 if created_task:
                     logger.info(
                         f"todoist_handler.create_task succeeded, created task ID: {created_task.id}"
                     )
+                    last_created_task_id = (
+                        created_task.id
+                    )  # <-- Store the ID of the created task
                     await asyncio.sleep(2)  # Добавляем задержку 2 секунды
                 else:
                     logger.error(
-                        f"todoist_handler.create_task failed for params: {parameters}"
+                        f"todoist_handler.create_task failed for params: {task_creation_params}"
                     )
+                    last_created_task_id = None  # Reset if creation failed
                 # LLM should generate reply_user instruction for confirmation
 
             elif instruction_type == "update_task":
+                last_created_task_id = (
+                    None  # Reset parent ID tracking if not creating tasks sequentially
+                )
                 task_id = parameters.get("task_id")
                 if not task_id:
                     logger.warning("Skipping update_task: missing task_id.")
@@ -268,6 +294,7 @@ async def process_text_input(
                 # LLM should generate reply_user instruction for confirmation
 
             elif instruction_type == "reply_user":
+                # Don't reset last_created_task_id here, confirmation might follow creation
                 message_text = parameters.get("message_text")
                 if message_text:
                     await update.message.reply_text(message_text)
@@ -280,6 +307,7 @@ async def process_text_input(
 
             # --- MODIFIED: ask_user logic ---
             elif instruction_type == "ask_user":
+                last_created_task_id = None  # Reset parent ID tracking
                 question = parameters.get("question_text")
                 state_key = parameters.get("state_key")
                 related_data = parameters.get("related_data")
@@ -327,6 +355,7 @@ async def process_text_input(
 
             # --- Add finish_request logic ---
             elif instruction_type == "finish_request":
+                last_created_task_id = None  # Reset parent ID tracking
                 logger.info(
                     "Finish request instruction received. Clearing pending state."
                 )
@@ -338,6 +367,9 @@ async def process_text_input(
                 return
 
             else:
+                last_created_task_id = (
+                    None  # Reset parent ID tracking for unknown types
+                )
                 logger.warning(
                     f"Unknown or unhandled instruction type received: {instruction_type}"
                 )
@@ -347,6 +379,7 @@ async def process_text_input(
                 )
 
         except Exception as e:
+            last_created_task_id = None  # Reset parent ID tracking on error
             logger.error(
                 f"Error executing instruction {instruction_type}: {e}", exc_info=True
             )

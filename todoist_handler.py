@@ -32,6 +32,47 @@ def _init_api() -> Optional[TodoistAPI]:
     return api
 
 
+def extract_duration_minutes(task: Task) -> Optional[int]:
+    """
+    Extracts the duration in minutes from a Todoist task.
+    Returns None if the duration cannot be determined.
+    """
+    try:
+        if hasattr(task, "duration") and task.duration:
+            # Primary check: task.duration.amount and task.duration.unit
+            if hasattr(task.duration, "amount") and hasattr(task.duration, "unit"):
+                amount = task.duration.amount
+                unit = task.duration.unit
+                if unit == "minute":
+                    return amount
+                elif unit == "hour":
+                    return amount * 60
+                elif unit == "day":
+                    logger.debug(
+                        f"Task {task.id} duration is in days, treating as unknown."
+                    )
+                else:
+                    logger.warning(f"Unknown duration unit '{unit}' for task {task.id}")
+            # Fallback: Check if task.duration is a dict (less likely)
+            elif (
+                isinstance(task.duration, dict)
+                and "amount" in task.duration
+                and "unit" in task.duration
+            ):
+                amount = task.duration["amount"]
+                unit = task.duration["unit"]
+                if unit == "minute":
+                    return amount
+                elif unit == "hour":
+                    return amount * 60
+    except Exception as e:
+        logger.debug(
+            f"Could not extract duration for task {getattr(task, 'id', 'unknown')}: {e}"
+        )
+
+    return None
+
+
 def get_projects() -> list[dict[str, str]]:
     """Gets list of projects from Todoist."""
     client = _init_api()
@@ -135,6 +176,7 @@ def create_task(
     project_id: Optional[str] = None,
     description: Optional[str] = None,
     duration_minutes: Optional[int] = None,
+    parent_id: Optional[str] = None,  # <-- Add parent_id parameter
 ) -> Optional[Task]:
     """Creates a new task in Todoist."""
     client = _init_api()
@@ -164,6 +206,8 @@ def create_task(
         if duration_minutes is not None and duration_minutes > 0:
             task_params["duration"] = duration_minutes
             task_params["duration_unit"] = "minute"
+        if parent_id:  # <-- Add parent_id to parameters if provided
+            task_params["parent_id"] = parent_id
 
         logger.info(f"Creating task in Todoist with processed params: {task_params}")
 
@@ -179,6 +223,7 @@ def create_task(
                 "due": due_string,
                 "priority": priority,
                 "duration": duration_minutes,
+                "parent_id": parent_id,  # <-- Log parent_id
             },
         )
         return task

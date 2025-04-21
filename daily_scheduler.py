@@ -14,6 +14,10 @@ from todoist_api_python.models import Task  # Ensure Task is imported
 # --- FIX: Import ContextTypes ---
 from telegram.ext import ContextTypes
 
+# --- NEW: Import specific API errors if available (replace with actual error types) ---
+# from todoist_api_python.api_error import TodoistAPIError # Example
+# from telegram.error import TelegramError # Example
+
 logger = logging.getLogger(__name__)
 
 # Types of day for activity suggestions (keep for context)
@@ -236,12 +240,29 @@ async def create_daily_schedule(
                     text="Нет задач для планирования или предложений на сегодня.",
                 )
 
+    # --- MODIFICATION: Enhanced error logging and user notification ---
+    # except TelegramError as tg_err: # Example of specific error handling
+    #    logger.error(f"Telegram API error during schedule creation for chat_id {chat_id}: {tg_err}", exc_info=True)
+    #    # Maybe add specific recovery or notification logic here
     except Exception as e:
-        logger.error(f"Error sending daily schedule: {e}", exc_info=True)
-        # Send error message via LLM? Or keep simple?
-        await telegram_bot_app.bot.send_message(
-            chat_id=chat_id, text="Произошла ошибка при создании расписания."
+        # Log with more context
+        logger.error(
+            f"Unhandled error during daily schedule creation for chat_id {chat_id}: {e}",
+            exc_info=True,
         )
+        try:
+            # Attempt to notify user even if main logic failed
+            await telegram_bot_app.bot.send_message(
+                chat_id=chat_id,
+                text="Извините, произошла внутренняя ошибка при создании вашего расписания на сегодня.",
+            )
+        except Exception as send_err:
+            # Log failure to send the error message itself
+            logger.error(
+                f"CRITICAL: Failed to send error notification message to chat_id {chat_id}: {send_err}",
+                exc_info=True,
+            )
+    # --- END MODIFICATION ---
 
 
 def get_day_type(date: datetime.date) -> str:
@@ -254,38 +275,68 @@ def get_day_type(date: datetime.date) -> str:
     return WORKDAY
 
 
-def get_today_tasks() -> list[todoist_handler.Task]:
+def get_today_tasks() -> list[Task]:  # Return type hint corrected
     """Fetches ALL active tasks and filters for those scheduled today with specific times."""
     logger.debug("Fetching all active tasks to filter for today's schedule...")
     try:
-        all_tasks = todoist_handler.get_tasks()  # Should now return list[Task]
+        api_client = (
+            todoist_handler._init_api()
+        )  # Assuming this returns the client or handles errors
+        if not api_client:
+            logger.error("Failed to initialize Todoist API client in get_today_tasks.")
+            return []
+        # Get tasks using the standard function (which internally uses the API client)
+        all_tasks = todoist_handler.get_tasks()  # Don't pass api_client parameter
 
         today_date = datetime.now().date()
         tasks_with_time_today = []
         for task in all_tasks:
-            # --- FIX: Add type check ---
             if not isinstance(task, Task):
                 logger.warning(
                     f"Skipping non-Task item in get_today_tasks loop: {type(task)}"
                 )
                 continue
-            # --- END FIX ---
 
-            # Original filtering logic
-            if task.due and task.due.date == str(today_date) and task.due.datetime:
-                tasks_with_time_today.append(task)
+            # --- MODIFICATION: Safer date checking ---
+            if task.due and task.due.date and task.due.datetime:
+                # Parse date safely before comparing
+                try:
+                    # Ensure task.due.date is a string before parsing
+                    if isinstance(task.due.date, str):
+                        task_due_date = datetime.strptime(
+                            task.due.date, "%Y-%m-%d"
+                        ).date()
+                        if task_due_date == today_date:
+                            tasks_with_time_today.append(task)
+                    else:
+                        logger.warning(
+                            f"Task {task.id} has unexpected due.date type: {type(task.due.date)}"
+                        )
+                except ValueError:
+                    logger.warning(
+                        f"Could not parse due date string '{task.due.date}' for task {task.id}"
+                    )
+            # --- END MODIFICATION ---
 
         logger.info(
             f"Found {len(tasks_with_time_today)} tasks with specific due times today after filtering."
         )
         return tasks_with_time_today
+    # --- MODIFICATION: More specific error handling (Example) ---
+    # except TodoistAPIError as api_err: # Replace with actual error type if known
+    #    logger.error(f"Todoist API error fetching tasks: {api_err}", exc_info=True)
+    #    return []
     except Exception as e:
-        logger.error(f"Error fetching or filtering today's tasks: {e}", exc_info=True)
+        # General fallback
+        logger.error(
+            f"Unexpected error fetching or filtering today's tasks: {e}", exc_info=True
+        )
         return []
+    # --- END MODIFICATION ---
 
 
 def calculate_available_time_blocks(
-    today_tasks: List[Dict[str, Any]], day_type: str
+    today_tasks: List[Task], day_type: str  # Changed type hint to Task
 ) -> List[Dict[str, Any]]:
     """Calculate available time blocks for scheduling, including buffers."""
     today = datetime.now().date()
@@ -320,9 +371,35 @@ def calculate_available_time_blocks(
 
     # Split blocks by existing tasks, adding buffer
     for task in today_tasks:
-        task_start = task["start_time"]
-        # --- MODIFICATION: Add buffer to task end time ---
-        task_end_with_buffer = task["end_time"] + timedelta(minutes=TASK_BUFFER_MINUTES)
+        # --- MODIFICATION: Safer access to task times ---
+        if not (task.due and task.due.datetime):
+            logger.warning(
+                f"Task {task.id} in today_tasks list lacks specific due datetime, skipping in block calculation."
+            )
+            continue  # Skip tasks without specific time for block calculation
+
+        try:
+            # Todoist datetime strings might include 'Z' for UTC
+            task_start_str = task.due.datetime.replace("Z", "+00:00")
+            task_start = datetime.fromisoformat(task_start_str)
+
+            # Estimate end time based on duration if available, otherwise assume 0 duration?
+            # This part needs clarification: How is end_time determined for today_tasks?
+            # Assuming a default duration or that duration is handled elsewhere.
+            # For now, let's assume a default minimum duration for blocking if none exists.
+            task_duration_minutes = (
+                todoist_handler.extract_duration_minutes(task) or 30
+            )  # Use helper or default
+            task_end = task_start + timedelta(minutes=task_duration_minutes)
+
+            task_end_with_buffer = task_end + timedelta(minutes=TASK_BUFFER_MINUTES)
+        except (ValueError, TypeError) as dt_err:
+            logger.warning(
+                f"Could not parse datetime or calculate end time for task {task.id} ('{task.due.datetime}'): {dt_err}"
+            )
+            continue  # Skip task if time parsing fails
+
+        # --- END MODIFICATION ---
 
         new_blocks = []
         for block in blocks:
@@ -333,10 +410,19 @@ def calculate_available_time_blocks(
             if task_start < block_end and task_end_with_buffer > block_start:
                 # Add block before the task if there's space
                 if task_start > block_start:
-                    new_blocks.append({"start": block_start, "end": task_start})
+                    # --- MODIFICATION: Ensure block end is not after original block end ---
+                    new_blocks.append(
+                        {"start": block_start, "end": min(task_start, block_end)}
+                    )
                 # Add block after the task (with buffer) if there's space
                 if task_end_with_buffer < block_end:
-                    new_blocks.append({"start": task_end_with_buffer, "end": block_end})
+                    # --- MODIFICATION: Ensure block start is not before original block start ---
+                    new_blocks.append(
+                        {
+                            "start": max(task_end_with_buffer, block_start),
+                            "end": block_end,
+                        }
+                    )
             else:
                 # No overlap, keep the block as is
                 new_blocks.append(block)
@@ -379,8 +465,13 @@ def get_pending_tasks(
     try:
         api_client = todoist_handler._init_api()
         if not api_client:
+            logger.error(
+                "Failed to initialize Todoist API client in get_pending_tasks."
+            )
             return []
-        active_tasks = api_client.get_tasks()
+        active_tasks = (
+            api_client.get_tasks()
+        )  # Assuming this is the correct way to call
         logger.info(
             f"Retrieved {len(active_tasks)} active tasks from Todoist for pending check"
         )
@@ -484,7 +575,8 @@ def get_pending_tasks(
             all_tasks_data.append(task_data)
 
     except Exception as e:
-        logger.error(f"Error getting pending tasks: {e}", exc_info=True)
+        logger.error(f"Unexpected error getting pending tasks: {e}", exc_info=True)
+        return []  # Return empty list on error
 
     # Sort tasks by relevance score (highest first)
     all_tasks_data.sort(key=lambda x: x["relevance_score"], reverse=True)
@@ -659,67 +751,95 @@ def create_schedule(
     return suggestions, need_clarification
 
 
-async def schedule_task_with_api(task_id: str, start_time: datetime) -> bool:
+async def schedule_task_with_api(
+    task_id: Union[str, int], start_time: datetime
+) -> bool:  # Allow int ID
     """Schedule a task for a specific time using Todoist API."""
+    task_id_str = str(task_id)  # Ensure string ID for API call
     try:
         api_client = todoist_handler._init_api()
         if not api_client:
-            logger.error(f"API client not available for scheduling task {task_id}")
+            logger.error(f"API client not available for scheduling task {task_id_str}")
             return False
 
+        # Format due string compatible with Todoist API (usually includes time)
         due_string = start_time.strftime("%Y-%m-%d %H:%M")
+        # Or potentially use 'due_datetime' if the API expects a full ISO string
+        # due_datetime_str = start_time.isoformat()
 
-        # Update the task with the new due date/time
         logger.debug(
-            f"Calling Todoist API to update task {task_id} due_string to {due_string}"
+            f"Calling Todoist API to update task {task_id_str} due_string to {due_string}"
         )
-        api_client.update_task(task_id=task_id, due_string=due_string)
-        # Add confirmation log
-        logger.info(f"Successfully updated task {task_id} via API to {due_string}")
-        return True
+        # Use the correct parameter name: due_string or due_datetime
+        updated = api_client.update_task(task_id=task_id_str, due_string=due_string)
+        if updated:
+            logger.info(
+                f"Successfully updated task {task_id_str} via API to {due_string}"
+            )
+            return True
+        else:
+            # The API call might return False or None on failure without raising exception
+            logger.warning(
+                f"Todoist API call to update task {task_id_str} did not return success."
+            )
+            return False
 
+    # --- MODIFICATION: More specific error handling (Example) ---
+    # except TodoistAPIError as api_err: # Replace with actual error type if known
+    #    logger.error(f"Todoist API error scheduling task {task_id_str}: {api_err}", exc_info=True)
+    #    return False
     except Exception as e:
         # Log the specific error
         logger.error(
-            f"Error calling Todoist API to schedule task {task_id}: {e}", exc_info=True
+            f"Unexpected error calling Todoist API to schedule task {task_id_str}: {e}",
+            exc_info=True,
         )
         return False
+    # --- END MODIFICATION ---
 
 
-async def estimate_task_duration(task_content: str) -> int:
+async def estimate_task_duration(
+    task_content: str,
+) -> Optional[int]:  # Return Optional[int]
     """
-    Use LLM to estimate task duration.
-
-    Returns:
-        Estimated duration in minutes
+    Use LLM to estimate task duration. Returns estimated duration in minutes or None if failed.
     """
+    # --- MODIFICATION: Placeholder for LLM call, improved fallback ---
+    logger.debug(f"Estimating duration for task: '{task_content}'")
+    # Placeholder - Replace with actual LLM call
+    estimated_duration = None
     try:
-        # Call LLM to estimate duration
-        prompt = f"Based on the task name, estimate how long it would take to complete this task (in minutes): {task_content}"
+        # --- Placeholder for LLM call ---
+        # response = await llm_handler.generate_response(
+        #     prompt_type="estimate_duration",
+        #     data={"task_content": task_content}
+        # )
+        # if response and response.isdigit():
+        #    estimated_duration = int(response)
+        # else:
+        #    logger.warning(f"LLM did not return a valid duration number for '{task_content}'. Response: {response}")
 
-        # Prepare a system instruction
-        system_instruction = """You are helping estimate how long a task will take to complete. Based on the task name, estimate the time in minutes.
-For common tasks, use these guidelines:
-- Quick email/message responses: 5-10 minutes
-- Brief planning: 15 minutes
-- Short meetings: 30 minutes
-- Standard meetings: 60 minutes
-- Complex tasks: 90-180 minutes
-- Major projects: Best broken into smaller tasks
-
-Return ONLY the number of minutes as an integer, nothing else."""
-
-        # TODO: Implement proper LLM duration estimation
-        # For now, use a simple heuristic based on task length
-        words = len(task_content.split())
-
-        if words <= 3:
-            return 30  # Short tasks default to 30 min
-        elif words <= 6:
-            return 60  # Medium tasks default to 60 min
-        else:
-            return 90  # Longer task descriptions default to 90 min
+        # --- Simple Heuristic Fallback (if LLM fails or not implemented) ---
+        if estimated_duration is None:
+            words = len(task_content.split())
+            if words <= 3:
+                estimated_duration = 30  # Short tasks default to 30 min
+            elif words <= 7:
+                estimated_duration = 60  # Medium tasks default to 60 min
+            else:
+                estimated_duration = 90  # Longer task descriptions default to 90 min
+            logger.debug(
+                f"Using heuristic duration for '{task_content}': {estimated_duration} mins"
+            )
 
     except Exception as e:
-        logger.error(f"Error estimating task duration: {e}")
-        return scheduler.DEFAULT_DURATION_MINUTES
+        logger.error(
+            f"Error during task duration estimation for '{task_content}': {e}",
+            exc_info=True,
+        )
+        estimated_duration = None  # Ensure None is returned on error
+
+    # --- Removed default duration return from except block ---
+    # Return None if estimation failed, let caller handle default
+    return estimated_duration
+    # --- END MODIFICATION ---

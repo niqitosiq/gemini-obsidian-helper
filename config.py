@@ -37,6 +37,9 @@ CLARIFICATION_TIMEOUT_SECONDS = int(
 KNOWLEDGE_BASE_ENABLED = True
 KNOWLEDGE_BASE_FILE = "knowledge_base.md"
 
+# --- Obsidian Configuration ---
+OBSIDIAN_VAULT_PATH = "/path/to/your/actual/obsidian/vault"  # IMPORTANT: Replace with your real vault path
+
 # Validation of critical configurations
 if not TELEGRAM_BOT_TOKEN:
     logger.critical("Critical error: TELEGRAM_BOT_TOKEN not found in configuration!")
