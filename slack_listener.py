@@ -1,2 +1,0 @@
-# Future Slack integration
-pass
