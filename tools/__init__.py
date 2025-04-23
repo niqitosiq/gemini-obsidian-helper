@@ -76,7 +76,7 @@ def get_tool_definitions() -> list[dict]:
         },
         {
             "name": "modify_file",
-            "description": "Overwrite an existing file with new content. The 'modification_description' should contain the *full* desired content, including any YAML frontmatter.",  # Updated description
+            "description": "Overwrite an existing file with new content. The 'content' should contain the *full* desired content, including any YAML frontmatter.",  # Updated description
             "parameters": {
                 "file_path": "The full path of the file to modify.",  # Type: STRING
                 "content": "The full content to write into the file, overwriting the existing content.",  # Updated parameter description

@@ -29,7 +29,9 @@ async def _send_telegram_message(message: str) -> bool:
         return False
 
     try:
-        await _current_telegram_update.message.reply_text(message)
+        await _current_telegram_update.message.reply_text(
+            message, parse_mode="MarkdownV2"
+        )
         logger.info(
             f"Message sent to Telegram user {_current_telegram_update.effective_user.id}"
         )
