@@ -1,7 +1,7 @@
 import logging
 import os
 import uuid  # For unique temporary file names
-import asyncio  # Import asyncio
+import asyncio  # Still needed for internal async operations
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -85,7 +85,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         result = {"error": "An internal error occurred while processing your message."}
     finally:
         # Clear context after processing
-        set_telegram_context(None, None)
+        # set_telegram_context(None, None)
+        pass
 
     # --- Handle the result from the message processor ---
     message_already_sent = False
@@ -126,7 +127,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Only send a message if it wasn't already sent directly
     if not message_already_sent:
         logger.info(f"Replying to {user_id}: {reply_message[:100]}...")
-        await update.message.reply_text(reply_message)
+        await update.message.reply_markdown(reply_message)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -175,7 +176,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         }
     finally:
         # Clear context after processing
-        set_telegram_context(None, None)
+        # set_telegram_context(None, None)
+        pass
         # Clean up the temporary file
         if os.path.exists(temp_filename):
             try:
@@ -233,8 +235,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # --- Main Bot Logic ---
-def main() -> None:
-    """Start the bot."""
+async def main_async() -> None:
+    """Start the bot asynchronously."""
     if not TELEGRAM_BOT_TOKEN:
         logger.critical(
             "TELEGRAM_BOT_TOKEN is not set. Bot cannot start. "
@@ -262,6 +264,25 @@ def main() -> None:
     # Register the error handler
     application.add_error_handler(error_handler)
 
-    # Run the bot until the user presses Ctrl-C
+    # Start the application without running event loop
     logger.info("Bot is running. Press Ctrl-C to stop.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.initialize()
+    await application.start()
+    # Use start_polling instead of run_polling to avoid event loop conflicts
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+
+def main() -> None:
+    """
+    Start the bot (synchronous interface for backward compatibility).
+    This function runs the asyncio event loop directly.
+    """
+    if not TELEGRAM_BOT_TOKEN:
+        logger.critical(
+            "TELEGRAM_BOT_TOKEN is not set. Bot cannot start. "
+            "Please set the TELEGRAM_BOT_TOKEN environment variable."
+        )
+        return
+
+    # Run the async main function
+    asyncio.run(main_async())

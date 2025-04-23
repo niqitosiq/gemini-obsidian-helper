@@ -20,6 +20,7 @@ tools = {
     "delete_folder": delete_folder,
     "finish": finish,
     "modify_file": modify_file,
+    # We don't expose recurring event tools to the LLM
 }
 
 
@@ -86,6 +87,31 @@ def get_tool_definitions() -> list[dict]:
         {
             "name": "finish",
             "description": "Indicate that the conversation is complete and no further action is needed.",
+            "parameters": {},  # No parameters
+            "required": [],  # No required parameters
+        },
+        {
+            "name": "add_recurring_event",
+            "description": "Add a new recurring event that sends a prompt to the LLM at scheduled times.",
+            "parameters": {
+                "event_id": "Unique identifier for the event.",  # Type: STRING
+                "schedule_time": "Cron-like schedule expression (e.g., 'daily at 9:00', 'every monday at 8:30', 'every 1 hour').",  # Type: STRING
+                "prompt": "The prompt to send to the LLM at the scheduled time.",  # Type: STRING
+                "description": "Human-readable description of this event (optional).",  # Type: STRING
+            },
+            "required": ["event_id", "schedule_time", "prompt"],
+        },
+        {
+            "name": "remove_recurring_event",
+            "description": "Remove a recurring event from the schedule.",
+            "parameters": {
+                "event_id": "ID of the event to remove.",  # Type: STRING
+            },
+            "required": ["event_id"],
+        },
+        {
+            "name": "list_recurring_events",
+            "description": "List all configured recurring events.",
             "parameters": {},  # No parameters
             "required": [],  # No required parameters
         },

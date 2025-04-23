@@ -29,11 +29,9 @@ async def _send_telegram_message(message: str) -> bool:
         return False
 
     try:
-        await _current_telegram_update.message.reply_text(
-            message, parse_mode="MarkdownV2"
-        )
+        await _current_telegram_update.message.reply_markdown(message)
         logger.info(
-            f"Message sent to Telegram user {_current_telegram_update.effective_user.id}"
+            f"Message sent to Telegram user {_current_telegram_update.effective_user.id} with Markdown"
         )
         return True
     except Exception as e:
@@ -57,30 +55,37 @@ def reply(message: str) -> dict:
     # If we have a context, try to send the message directly
     if _current_telegram_update and _current_telegram_context:
         try:
-            # Get the currently running event loop
-            loop = asyncio.get_running_loop()
-            # Submit the coroutine to the loop from this synchronous thread
-            future = asyncio.run_coroutine_threadsafe(
-                _send_telegram_message(message), loop
-            )
-            # Wait for the result (with a longer timeout)
-            # Adjust timeout as needed
-            sent = future.result(timeout=30)  # Increased timeout to 30 seconds
-        except RuntimeError as e:
-            # This might happen if there's no running loop (e.g., testing outside bot context)
-            logger.error(
-                f"Could not get running event loop: {e}. Message not sent directly."
-            )
-            sent = False  # Ensure sent is False if loop isn't running
+            # Always try to use the currently running event loop
+            try:
+                # Get the running event loop if it exists
+                loop = asyncio.get_running_loop()
+                # Use run_coroutine_threadsafe to submit our coroutine to the loop
+                future = asyncio.run_coroutine_threadsafe(
+                    _send_telegram_message(message), loop
+                )
+                # Wait for the result with a timeout
+                sent = future.result(timeout=30)  # 30 seconds timeout
+                logger.info("Message sent using the existing event loop")
+            except RuntimeError:
+                # Store the current telegram context values
+                temp_update = _current_telegram_update
+                temp_context = _current_telegram_context
+
+                # Use a custom approach for when no event loop is running
+                # Save the message to be sent by the regular handler
+                logger.info(
+                    "No running event loop found. Message will be sent by the handler."
+                )
+
+                # Signal to the caller that the message should be sent via the regular flow
+                sent = False
         except TimeoutError:
-            logger.error(
-                "Timeout waiting for Telegram message to send (30s)."
-            )  # Updated log message
+            logger.error("Timeout waiting for Telegram message to send (30s).")
             sent = False  # Ensure sent is False on timeout
         except Exception as e:
-            # Catch other potential exceptions from result() or run_coroutine_threadsafe
+            # Catch any other exceptions
             logger.error(
-                f"Error sending message via run_coroutine_threadsafe: {e}",
+                f"Error sending message: {e}",
                 exc_info=True,
             )
             sent = False  # Ensure sent is False on other errors
