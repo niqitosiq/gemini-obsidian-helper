@@ -167,7 +167,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
         llm_service=services.llm_service,
         history_service=services.history_service,
         vault_service=services.vault_service,
-        telegram_service=services.telegram_service,  # Add missing telegram_service dependency
+        telegram_service=services.telegram_service,
+        config_service=core.config_service,  # Inject ConfigService
         tool_handlers_map_provider=handlers.tool_handlers_provider,
     )
 

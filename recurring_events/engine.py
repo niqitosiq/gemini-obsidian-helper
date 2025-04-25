@@ -17,8 +17,8 @@ from services.interfaces import (
     ILLMService,
     IHistoryService,
     IVaultService,
-    IConfigService,  # Keep ConfigService import for now, might be needed elsewhere
-    ITelegramService,  # Add TelegramService back
+    IConfigService,  # Ensure ConfigService is imported
+    ITelegramService,
     FileEventData,
 )
 
@@ -59,7 +59,6 @@ class RecurringEventsEngine(IRecurringEventsEngine):
     @inject
     def __init__(
         self,
-        # Remove config_service injection for event handling
         scheduling_service: ISchedulingService = Provide[
             "ApplicationContainer.services.scheduling_service"
         ],
@@ -70,8 +69,11 @@ class RecurringEventsEngine(IRecurringEventsEngine):
         vault_service: IVaultService = Provide[
             "ApplicationContainer.services.vault_service"
         ],
-        telegram_service: ITelegramService = Provide[  # Add TelegramService injection
+        telegram_service: ITelegramService = Provide[
             "ApplicationContainer.services.telegram_service"
+        ],
+        config_service: IConfigService = Provide[  # Inject ConfigService
+            "ApplicationContainer.core.config_service"
         ],
         tool_handlers_map_provider: providers.Provider = Provide[
             "ApplicationContainer.handlers.tool_handlers_provider"
@@ -81,10 +83,9 @@ class RecurringEventsEngine(IRecurringEventsEngine):
         self._llm_service = llm_service
         self._history_service = history_service
         self._vault_service = vault_service
-        self._telegram_service = telegram_service  # Store TelegramService
-        self._tool_handlers_map_provider = (
-            tool_handlers_map_provider  # Store the provider
-        )
+        self._telegram_service = telegram_service
+        self._config_service = config_service  # Store ConfigService
+        self._tool_handlers_map_provider = tool_handlers_map_provider
         self._events = {}
         self._scheduled_file_event_ids = set()
         logger.info("RecurringEventsEngine initialized with DI.")
@@ -125,13 +126,14 @@ class RecurringEventsEngine(IRecurringEventsEngine):
         Обрабатывает событие изменения файла в хранилище:
         перечитывает файл, отменяет старые и планирует новые напоминания.
         """
-        # Pass telegram_service to handle_vault_file_event
+        # Pass telegram_service and config_service to handle_vault_file_event
         vault_tasks.handle_vault_file_event(
             self,
             self._vault_service,
             self._scheduling_service,
             relative_path,
             self._telegram_service,
+            self._config_service,  # Pass config_service
         )
 
     def load_and_schedule_all(self) -> None:
@@ -145,8 +147,13 @@ class RecurringEventsEngine(IRecurringEventsEngine):
             if event_data.get("is_global"):
                 self._schedule_event(event_id, event_data)
 
-        # Pass telegram_service to load_vault_tasks
-        vault_tasks.load_vault_tasks(self, self._vault_service, self._telegram_service)
+        # Pass telegram_service and config_service to load_vault_tasks
+        vault_tasks.load_vault_tasks(
+            self,
+            self._vault_service,
+            self._telegram_service,
+            self._config_service,  # Pass config_service
+        )
 
         logger.info("Finished loading and scheduling events.")
 

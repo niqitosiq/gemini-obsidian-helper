@@ -11,8 +11,8 @@ from services.interfaces import (
     ISchedulingService,
     IVaultService,
     FileEventData,
-    ITelegramService,  # Import ITelegramService instead
-    # IConfigService, # Import if using config fallback
+    ITelegramService,
+    IConfigService,  # Import IConfigService
 )
 
 logger = logging.getLogger(__name__)
@@ -168,7 +168,8 @@ def calculate_reminder_times(
 def load_vault_tasks(
     engine: IRecurringEventsEngine,
     vault_service: IVaultService,
-    telegram_service: ITelegramService,  # Use TelegramService instead
+    telegram_service: ITelegramService,
+    config_service: IConfigService,  # Add config_service parameter
 ) -> None:
     """
     Сканирует файлы задач в хранилище, парсит их и планирует напоминания.
@@ -176,13 +177,24 @@ def load_vault_tasks(
     user_id = (
         telegram_service.get_current_user_id()
     )  # Attempt to get user ID from TelegramService
+
     if user_id is None:
         logger.warning(
             "Could not determine user_id from TelegramService during task load. "
-            "Reminders created now might not send replies directly. "
-            # "Consider fetching a primary user ID from config as a fallback." # Uncomment if implementing fallback
+            "Attempting to use primary user ID from config as fallback."
         )
-        # user_id = PRIMARY_USER_ID # Example fallback
+        configured_ids = config_service.get_telegram_user_ids()
+        if configured_ids:
+            user_id = int(
+                configured_ids[0]
+            )  # Use the first ID as primary, convert to int
+            logger.info(f"Using primary user ID from config: {user_id}")
+        else:
+            logger.error(
+                "No user_id from TelegramService and no primary user ID found in config. "
+                "Cannot schedule reminders with a target user."
+            )
+            # Keep user_id as None, subsequent logic should handle this
 
     logger.debug(f"Loading tasks from vault (resolved user_id: {user_id})...")
     vault_root = vault_service.get_vault_root()
@@ -266,7 +278,8 @@ def handle_vault_file_event(
     vault_service: IVaultService,
     scheduling_service: ISchedulingService,
     relative_path: str,
-    telegram_service: ITelegramService,  # Use TelegramService instead
+    telegram_service: ITelegramService,
+    config_service: IConfigService,  # Add config_service parameter
 ) -> None:
     """
     Обрабатывает событие изменения файла в хранилище:
@@ -275,13 +288,24 @@ def handle_vault_file_event(
     user_id = (
         telegram_service.get_current_user_id()
     )  # Attempt to get user ID from TelegramService
+
     if user_id is None:
         logger.warning(
             f"Could not determine user_id from TelegramService during file event for {relative_path}. "
-            "Reminders updated now might not send replies directly. "
-            # "Consider fetching a primary user ID from config as a fallback." # Uncomment if implementing fallback
+            "Attempting to use primary user ID from config as fallback."
         )
-        # user_id = PRIMARY_USER_ID # Example fallback
+        configured_ids = config_service.get_telegram_user_ids()
+        if configured_ids:
+            user_id = int(
+                configured_ids[0]
+            )  # Use the first ID as primary, convert to int
+            logger.info(f"Using primary user ID from config: {user_id}")
+        else:
+            logger.error(
+                f"No user_id from TelegramService and no primary user ID found in config for file event {relative_path}. "
+                "Cannot update reminders with a target user."
+            )
+            # Keep user_id as None, subsequent logic should handle this
 
     logger.info(
         f"Handling vault file event for: {relative_path} (resolved user_id: {user_id})"
