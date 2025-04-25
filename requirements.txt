@@ -1,0 +1,6 @@
+python-dotenv
+google-generativeai
+python-telegram-bot[ext]
+schedule
+watchdog
+dependency-injector
