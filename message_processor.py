@@ -31,14 +31,15 @@ def process_user_message(
     vault_service: IVaultService,
     prompt_builder: IPromptBuilderService,
     tool_handlers_map: dict,
+    user_id: int,  # Re-add user_id parameter
 ) -> Optional[Dict[str, Any]]:
     """
     Обрабатывает сообщение пользователя, используя переданные сервисы.
     Выполняет CQRS-подобное разделение для текстовых ответов и вызовов инструментов.
     """
     logger.info(
-        f"Processing user message: {user_message[:100]}..."
-    )  # Updated log message
+        f"Processing user message: {user_message[:100]}... for user_id: {user_id}"
+    )  # Add user_id to log
 
     try:
         # 1. Обновляем историю
@@ -256,7 +257,8 @@ def process_user_message(
                 tool_execution_results.append({"tool": tool_name, **tool_result})
 
             if last_reply_message:
-                final_result_for_user = {"text": last_reply_message}
+                # final_result_for_user = {"text": last_reply_message}
+                pass
             elif tool_execution_results:
                 last_tool_res = tool_execution_results[-1]
                 status = last_tool_res.get("status", "unknown")

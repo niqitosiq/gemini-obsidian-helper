@@ -25,7 +25,7 @@ from services.scheduling_service import SchedulingServiceImpl
 from services.telegram_service import TelegramServiceImpl
 
 # --- Движок Событий ---
-from recurring_events_engine import RecurringEventsEngine
+from recurring_events import RecurringEventsEngine
 
 # --- Обработчики Инструментов ---
 from tools.tool_create_file import CreateFileToolHandler
@@ -46,7 +46,7 @@ from telegram_bot import TelegramAppRunner, error_handler
 # import main
 # import message_processor
 # import telegram_bot
-# import recurring_events_engine as engine_module
+# import recurring_events as engine_module
 # import tools.utils
 
 # Можно добавить конкретные модули сервисов/обработчиков, если они используют @inject
@@ -161,21 +161,19 @@ class ApplicationContainer(containers.DeclarativeContainer):
     handlers = providers.Container(HandlersContainer, core=core, services=services)
 
     # --- Основные компоненты приложения ---
-    recurring_events_engine: providers.Provider[IRecurringEventsEngine] = (
-        providers.Singleton(
-            RecurringEventsEngine,
-            scheduling_service=services.scheduling_service,
-            llm_service=services.llm_service,
-            history_service=services.history_service,
-            vault_service=services.vault_service,
-            config_service=core.config_service,
-            tool_handlers_map_provider=handlers.tool_handlers_provider,
-        )
+    recurring_events: providers.Provider[IRecurringEventsEngine] = providers.Singleton(
+        RecurringEventsEngine,
+        scheduling_service=services.scheduling_service,  # Keep one instance
+        llm_service=services.llm_service,
+        history_service=services.history_service,
+        vault_service=services.vault_service,
+        telegram_service=services.telegram_service,  # Add missing telegram_service dependency
+        tool_handlers_map_provider=handlers.tool_handlers_provider,
     )
 
     telegram_app_runner = providers.Singleton(
         TelegramAppRunner,
-        config_service=core.config_service,
+        config_service=core.config_service,  # Add missing config_service dependency
         message_handler_instance=handlers.telegram_message_handler,
         # error_handler=providers.Object(error_handler) # Можно внедрить
     )

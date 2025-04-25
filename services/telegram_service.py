@@ -16,6 +16,7 @@ class TelegramServiceImpl(ITelegramService):
 
     _current_update: Optional[Update] = None
     _current_context: Optional[ContextTypes.DEFAULT_TYPE] = None
+    _current_user_id: Optional[int] = None  # Re-add attribute to store user ID
 
     def __init__(self):
         logger.debug("TelegramService initialized.")
@@ -23,10 +24,19 @@ class TelegramServiceImpl(ITelegramService):
     def set_current_context(
         self, update: Optional[Update], context: Optional[ContextTypes.DEFAULT_TYPE]
     ) -> None:
-        """Устанавливает текущий контекст Update/Context."""
+        """Устанавливает текущий контекст Update/Context и ID пользователя."""
         # logger.debug(f"Setting Telegram context: Update={'Yes' if update else 'No'}, Context={'Yes' if context else 'No'}")
         self._current_update = update
         self._current_context = context
+        # Re-add logic to store the user ID if available
+        self._current_user_id = (
+            update.effective_user.id if update and update.effective_user else None
+        )
+        logger.debug(f"Set current user ID in TelegramService: {self._current_user_id}")
+
+    def get_current_user_id(self) -> Optional[int]:
+        """Возвращает ID текущего пользователя из контекста."""
+        return self._current_user_id
 
     async def send_message(
         self,

@@ -98,7 +98,7 @@ class TelegramMessageHandler:
             except Exception as e:
                 logger.warning(f"Failed to send typing action: {e}")
 
-        final_reply_message = "Произошла ошибка при обработке вашего сообщения."
+        final_reply_message = None
         message_sent_directly = False
 
         try:
@@ -113,6 +113,7 @@ class TelegramMessageHandler:
                 vault_service=self._vault_service,
                 prompt_builder=self._prompt_builder_service,
                 tool_handlers_map=tool_handlers_map,
+                user_id=user_id,  # Pass the user_id
             )
 
             # Обрабатываем результат
@@ -138,8 +139,6 @@ class TelegramMessageHandler:
                     final_reply_message = (
                         f"Статус: {result['status']}. {result['message']}"
                     )
-            else:
-                logger.error("process_user_message returned None")
 
         except Exception as e:
             logger.error(
