@@ -156,7 +156,7 @@ class TelegramMessageHandler:
             await self._telegram_service.send_message(chat_id, final_reply_message)
 
         # Сбрасываем контекст после обработки и попытки отправки ответа
-        self._telegram_service.set_current_context(None, None)
+        # self._telegram_service.set_current_context(None, None)
 
     # --- Обработчики для telegram.ext ---
     async def text_handler(
@@ -237,7 +237,7 @@ class TelegramMessageHandler:
             logger.error("Transcription failed, no text to process.")
             # Сообщение об ошибке уже должно было быть отправлено
             # Сбрасываем контекст, т.к. обработка завершена (неудачно)
-            self._telegram_service.set_current_context(None, None)
+            # self._telegram_service.set_current_context(None, None)
 
     async def start_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

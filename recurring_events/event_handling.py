@@ -123,7 +123,7 @@ def execute_event(
 ):
     """Выполняет логику события (например, отправка напоминания через LLM)."""
     logger.info(f"Executing logic for event: {event_id}")
-    prompt_template = event_data.get("prompt", "Scheduled event occurred: {event_id}")
+    prompt_template = event_data.get("prompt", "{event_id}")
 
     try:
         current_datetime = datetime.datetime.now()
@@ -133,7 +133,7 @@ def execute_event(
             time=current_datetime.strftime("%H:%M"),
         )
 
-        logger.debug(
+        logger.info(
             f"Formatted prompt for event '{event_id}': {formatted_prompt[:100]}..."
         )
 

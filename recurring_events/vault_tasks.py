@@ -234,7 +234,7 @@ def load_vault_tasks(
 
                 if reminder_30m_time:
                     event_id_30m = f"reminder_30m_{relative_path}"
-                    prompt_30m = f"Reminder: Task '{task_title}' is starting in 30 minutes ({task_time_str} today)."
+                    prompt_30m = f"Remind user about: Task '{task_title}' is starting in 30 minutes ({task_time_str} today)."
                     schedule_dsl_30m = f"daily at {reminder_30m_time.strftime('%H:%M')}"
                     event_data_30m = {
                         "schedule_time": schedule_dsl_30m,
@@ -251,7 +251,7 @@ def load_vault_tasks(
 
                 if reminder_5m_time:
                     event_id_5m = f"reminder_5m_{relative_path}"
-                    prompt_5m = f"Reminder: Task '{task_title}' is starting in 5 minutes ({task_time_str} today)."
+                    prompt_5m = f"Remind user about: Task '{task_title}' is starting in 5 minutes ({task_time_str} today)."
                     schedule_dsl_5m = f"daily at {reminder_5m_time.strftime('%H:%M')}"
                     event_data_5m = {
                         "schedule_time": schedule_dsl_5m,
@@ -351,7 +351,7 @@ def handle_vault_file_event(
             )
 
             if reminder_30m_time:
-                prompt_30m = f"Reminder: Task '{task_title}' is starting in 30 minutes ({task_time_str} today)."
+                prompt_30m = f"Remind user about '{task_title}' is starting in 30 minutes ({task_time_str} today)."
                 schedule_dsl_30m = f"daily at {reminder_30m_time.strftime('%H:%M')}"
                 event_data_30m = {
                     "schedule_time": schedule_dsl_30m,
@@ -370,7 +370,7 @@ def handle_vault_file_event(
                 )
 
             if reminder_5m_time:
-                prompt_5m = f"Reminder: Task '{task_title}' is starting in 5 minutes ({task_time_str} today)."
+                prompt_5m = f"Remind user about '{task_title}' is starting in 5 minutes ({task_time_str} today)."
                 schedule_dsl_5m = f"daily at {reminder_5m_time.strftime('%H:%M')}"
 
                 event_data_5m = {
