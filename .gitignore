@@ -3,3 +3,5 @@ __pycache__
 knowledge_base.md
 vault
 conversation_history.json
+global_recurring_events.json
+temp_audio
