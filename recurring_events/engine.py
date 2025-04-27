@@ -176,6 +176,12 @@ class RecurringEventsEngine(IRecurringEventsEngine):
     def start(self) -> None:
         """Запускает движок: загружает и планирует события, запускает SchedulingService."""
         self.load_and_schedule_all()
+        # Schedule daily rescheduling at 00:01
+        self._scheduling_service.add_job(
+            schedule_dsl="daily at 00:01",
+            event_id="daily_reschedule_vault_tasks",
+            callback=lambda _: self.load_and_schedule_all(),
+        )
         self._scheduling_service.start()
         logger.info("RecurringEventsEngine started.")
 

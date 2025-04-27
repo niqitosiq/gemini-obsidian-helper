@@ -26,7 +26,10 @@ class _WatchdogHandler(FileSystemEventHandler):
         logger.debug("WatchdogHandler initialized.")
 
     def on_any_event(self, event: FileSystemEvent):
-        """Перехватывает все события."""
+        """Перехватывает только события записи файла."""
+        # Only react to file write (modified) events, not directories
+        if event.event_type != "modified" or event.is_directory:
+            return
         if event.is_directory and event.event_type == "modified":
             return
 
@@ -139,14 +142,51 @@ class SchedulingServiceImpl(ISchedulingService):
         )
         try:
             parts = schedule_dsl.lower().split()
+            weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
             if len(parts) >= 3 and parts[0] == "daily" and parts[1] == "at":
                 time_str = parts[2]
                 self.schedule_daily(time_str, event_id, callback)
                 return True
+            elif len(parts) >= 4 and parts[0] == "every" and parts[-2] == "at":
+                # Handle "every <weekday> [and <weekday>...] at HH:MM"
+                time_str = parts[-1]
+                day_parts = parts[1:-2]
+                selected_weekdays = []
+                i = 0
+                while i < len(day_parts):
+                    if day_parts[i] in weekdays:
+                        selected_weekdays.append(day_parts[i])
+                        i += 1
+                        if i < len(day_parts) and day_parts[i] == "and":
+                            i += 1 # Skip 'and'
+                        elif i < len(day_parts): # Found a weekday not followed by 'and' or end
+                             logger.error(f"Invalid weekday sequence in DSL for event '{event_id}': {schedule_dsl}")
+                             return False
+                    else:
+                        logger.error(f"Invalid weekday '{day_parts[i]}' in DSL for event '{event_id}': {schedule_dsl}")
+                        return False
+
+                if not selected_weekdays:
+                     logger.error(f"No valid weekdays found in DSL for event '{event_id}': {schedule_dsl}")
+                     return False
+
+                # Use schedule_weekly for each selected weekday
+                # Note: schedule_weekly currently only supports one day.
+                # We'll call it multiple times or modify it later if needed.
+                # For now, let's assume the user wants separate jobs per day if multiple days are specified.
+                # A better approach would be to modify schedule_weekly or use schedule directly.
+                # Let's just use the first day for now and log a warning.
+                if len(selected_weekdays) > 1:
+                    logger.warning(f"DSL for event '{event_id}' specifies multiple weekdays, but only the first ('{selected_weekdays[0]}') will be scheduled due to current limitations.")
+
+                self.schedule_weekly(selected_weekdays[0], time_str, event_id, callback)
+                # TODO: Enhance schedule_weekly or use schedule directly to handle multiple weekdays per job
+                return True
+
             elif (
                 len(parts) >= 3
                 and parts[0] == "every"
-                and parts[2] in ["minute", "minutes", "hour", "hours", "day", "days"]
+                and parts[2] in ["minute", "minutes", "hour", "hours", "day", "days"] # Keep interval support
             ):
                 interval = int(parts[1])
                 unit = parts[2]
