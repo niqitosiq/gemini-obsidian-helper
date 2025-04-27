@@ -1,6 +1,8 @@
 import logging
 import os
 from typing import Optional, Union, List, Dict, Any, Sequence
+import asyncio
+import time
 
 import google.genai as genai
 
@@ -15,6 +17,10 @@ logger = logging.getLogger(__name__)
 # Значение по умолчанию для max_output_tokens, если не передано
 DEFAULT_MAX_OUTPUT_TOKENS = 20000
 
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1  # seconds
+MAX_RETRY_DELAY = 10  # seconds
 
 class LLMServiceImpl(ILLMService):
     """Реализация сервиса для взаимодействия с Gemini API."""
@@ -58,6 +64,50 @@ class LLMServiceImpl(ILLMService):
             )
             self._client = None
 
+    async def _async_retry_with_exponential_backoff(self, func, *args, **kwargs):
+        """Helper method to implement retry logic with exponential backoff for async functions."""
+        retry_count = 0
+        delay = INITIAL_RETRY_DELAY
+
+        while retry_count < MAX_RETRIES:
+            try:
+                return await func(*args, **kwargs)
+            except genai_errors.APIError as e:
+                retry_count += 1
+                if retry_count == MAX_RETRIES:
+                    logger.error(f"Failed after {MAX_RETRIES} retries: {e}", exc_info=True)
+                    return None
+                
+                logger.warning(
+                    f"API error on attempt {retry_count}/{MAX_RETRIES}, retrying in {delay}s: {e}"
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY)  # Exponential backoff with cap
+
+        return None
+
+    def _sync_retry_with_exponential_backoff(self, func, *args, **kwargs):
+        """Helper method to implement retry logic with exponential backoff for sync functions."""
+        retry_count = 0
+        delay = INITIAL_RETRY_DELAY
+
+        while retry_count < MAX_RETRIES:
+            try:
+                return func(*args, **kwargs)
+            except genai_errors.APIError as e:
+                retry_count += 1
+                if retry_count == MAX_RETRIES:
+                    logger.error(f"Failed after {MAX_RETRIES} retries: {e}", exc_info=True)
+                    return None
+                
+                logger.warning(
+                    f"API error on attempt {retry_count}/{MAX_RETRIES}, retrying in {delay}s: {e}"
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY)  # Exponential backoff with cap
+
+        return None
+
     async def call_async(
         self,
         contents: List[Union[str, genai_types.Part, genai_types.Content]],
@@ -66,7 +116,6 @@ class LLMServiceImpl(ILLMService):
         max_output_tokens: Optional[int] = None,
     ) -> Optional[genai_types.GenerateContentResponse]:
         """Асинхронный вызов LLM."""
-        # Reverted check to client.aio
         if not self._client or not self._client.aio:
             logger.error(
                 "LLM async call impossible: Gemini client (or aio) not initialized."
@@ -84,7 +133,7 @@ class LLMServiceImpl(ILLMService):
             config_params["system_instruction"] = system_instruction
         if response_mime_type:
             config_params["response_mime_type"] = response_mime_type
-        if effective_max_tokens is not None:  # Проверяем, что значение не None
+        if effective_max_tokens is not None:
             config_params["max_output_tokens"] = effective_max_tokens
 
         generation_config_obj = (
@@ -97,7 +146,6 @@ class LLMServiceImpl(ILLMService):
             "model": self._model_name,
             "contents": contents,
         }
-        # Use 'config' keyword argument as per documentation
         if generation_config_obj:
             generate_content_args["config"] = generation_config_obj
 
@@ -105,17 +153,18 @@ class LLMServiceImpl(ILLMService):
             logger.debug(
                 f"Calling LLM async. Model: {self._model_name}. Args keys: {list(generate_content_args.keys())}. Contents start: {str(contents)[:200]}..."
             )
-            # Call generate_content on client.aio.models as per documentation
-            response = await self._client.aio.models.generate_content(
-                **generate_content_args
-            )
-            logger.debug(
-                f"LLM async call successful. Response text start: {getattr(response, 'text', 'N/A')[:100]}..."
-            )
+            
+            async def _generate_content():
+                return await self._client.aio.models.generate_content(**generate_content_args)
+            
+            response = await self._async_retry_with_exponential_backoff(_generate_content)
+            
+            if response:
+                logger.debug(
+                    f"LLM async call successful. Response text start: {getattr(response, 'text', 'N/A')[:100]}..."
+                )
             return response
-        except genai_errors.APIError as e:
-            logger.error(f"Gemini API error during async call: {e}", exc_info=True)
-            return None
+            
         except Exception as e:
             logger.error(f"Unexpected error during async LLM call: {e}", exc_info=True)
             return None
@@ -128,7 +177,6 @@ class LLMServiceImpl(ILLMService):
         max_output_tokens: Optional[int] = None,
     ) -> Optional[genai_types.GenerateContentResponse]:
         """Синхронный вызов LLM."""
-        # Reverted check to client
         if not self._client:
             logger.error("LLM sync call impossible: Gemini client not initialized.")
             return None
@@ -157,7 +205,6 @@ class LLMServiceImpl(ILLMService):
             "model": self._model_name,
             "contents": contents,
         }
-        # Use 'config' keyword argument as per documentation
         if generation_config_obj:
             generate_content_args["config"] = generation_config_obj
 
@@ -165,15 +212,18 @@ class LLMServiceImpl(ILLMService):
             logger.debug(
                 f"Calling LLM sync. Model: {self._model_name}. Args keys: {list(generate_content_args.keys())}. Contents start: {str(contents)[:200]}..."
             )
-            # Call generate_content on client.models as per documentation
-            response = self._client.models.generate_content(**generate_content_args)
-            logger.debug(
-                f"LLM sync call successful. Response text start: {getattr(response, 'text', 'N/A')[:100]}..."
-            )
+            
+            def _generate_content():
+                return self._client.models.generate_content(**generate_content_args)
+            
+            response = self._sync_retry_with_exponential_backoff(_generate_content)
+            
+            if response:
+                logger.debug(
+                    f"LLM sync call successful. Response text start: {getattr(response, 'text', 'N/A')[:100]}..."
+                )
             return response
-        except genai_errors.APIError as e:
-            logger.error(f"Gemini API error during sync call: {e}", exc_info=True)
-            return None
+            
         except Exception as e:
             logger.error(f"Unexpected error during sync LLM call: {e}", exc_info=True)
             return None

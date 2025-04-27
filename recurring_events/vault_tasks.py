@@ -117,14 +117,21 @@ def extract_and_validate_task_details(
     #     f"DEBUG: task_time_str: {task_time_str}, type: {type(task_time_str)}"
     # )
 
+    # Ensure task is explicitly marked as not completed
+    if task_completed is None:  # If 'completed' field is missing in frontmatter
+        logger.debug(
+            f"Skipping scheduling for {relative_path}: 'completed' field not found in frontmatter."
+        )
+        return None
+
     if (
         not task_date_str
         or not task_time_str
-        or task_completed
+        or task_completed is True
         or task_status != "todo"
     ):
         logger.debug(
-            f"Skipping scheduling for {relative_path}: missing date/time, completed, or not a todo."
+            f"Skipping scheduling for {relative_path}: missing date/time, completed: {task_completed}, status: {task_status}"
         )
         return None
 

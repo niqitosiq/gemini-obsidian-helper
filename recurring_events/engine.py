@@ -55,6 +55,8 @@ class RecurringEventsEngine(IRecurringEventsEngine):
 
     _events: Dict[str, Dict[str, Any]]
     _scheduled_file_event_ids: set[str]
+    _last_processed: Dict[str, datetime.datetime]
+    _debounce_interval: datetime.timedelta
 
     @inject
     def __init__(
@@ -88,6 +90,8 @@ class RecurringEventsEngine(IRecurringEventsEngine):
         self._tool_handlers_map_provider = tool_handlers_map_provider
         self._events = {}
         self._scheduled_file_event_ids = set()
+        self._last_processed = {}
+        self._debounce_interval = datetime.timedelta(seconds=1)  # 1 second debounce
         logger.info("RecurringEventsEngine initialized with DI.")
 
     # Keep _validate_event_data as it's used by global_events.load_global_events
@@ -125,15 +129,27 @@ class RecurringEventsEngine(IRecurringEventsEngine):
         """
         Обрабатывает событие изменения файла в хранилище:
         перечитывает файл, отменяет старые и планирует новые напоминания.
+        Включает механизм debounce для предотвращения множественных обработок.
         """
-        # Pass telegram_service and config_service to handle_vault_file_event
+        now = datetime.datetime.now()
+        last_process_time = self._last_processed.get(relative_path)
+
+        # Skip if file was processed recently
+        if last_process_time and now - last_process_time < self._debounce_interval:
+            logger.debug(f"Skipping duplicate event for {relative_path} (debounced)")
+            return
+
+        # Update last processed time
+        self._last_processed[relative_path] = now
+
+        # Process the file event
         vault_tasks.handle_vault_file_event(
             self,
             self._vault_service,
             self._scheduling_service,
             relative_path,
             self._telegram_service,
-            self._config_service,  # Pass config_service
+            self._config_service,
         )
 
     def load_and_schedule_all(self) -> None:

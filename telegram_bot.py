@@ -150,10 +150,10 @@ class TelegramMessageHandler:
         # self._telegram_service.set_current_context(None, None)
 
         # Отправляем ответ, если он есть и не был отправлен напрямую
-        if final_reply_message and chat_id != "Unknown":
-            logger.info(f"Replying to user {user_id}: {final_reply_message[:100]}...")
-            # Используем send_message из TelegramService, чтобы не зависеть от context.bot напрямую здесь
-            await self._telegram_service.send_message(chat_id, final_reply_message)
+        # if final_reply_message and chat_id != "Unknown":
+        #     logger.info(f"Replying to user {user_id}: {final_reply_message[:100]}...")
+        #     # Используем send_message из TelegramService, чтобы не зависеть от context.bot напрямую здесь
+        #     await self._telegram_service.send_message(chat_id, final_reply_message)
 
         # Сбрасываем контекст после обработки и попытки отправки ответа
         # self._telegram_service.set_current_context(None, None)
