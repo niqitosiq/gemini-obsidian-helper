@@ -118,9 +118,11 @@ class ReplyToolHandler:
                     ),
                     loop,
                 )
+                # Increase timeout to accommodate potential retries in TelegramService
+                # Max retry sleep time = 1 + 2 + 4 = 7 seconds. Add buffer for API calls.
                 sent_directly = future.result(
-                    timeout=15
-                )  # Use timeout for threadsafe calls
+                    timeout=30
+                )
 
             if sent_directly:
                 logger.info(
