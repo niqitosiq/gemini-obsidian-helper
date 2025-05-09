@@ -4,9 +4,7 @@ from typing import Optional, Union, List, Dict, Any, Sequence
 import asyncio
 import time
 
-import google.genai as genai
-
-# Removed direct import of GenerativeModel
+from google import genai
 from google.genai import types as genai_types
 from google.genai import errors as genai_errors
 
