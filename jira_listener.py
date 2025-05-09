@@ -1,2 +1,0 @@
-# Future Jira integration
-pass

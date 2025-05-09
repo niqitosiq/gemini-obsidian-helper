@@ -1,1 +1,9 @@
 python-dotenv
+google-genai
+python-telegram-bot[ext]
+schedule
+watchdog
+dependency-injector
+httpx
+pyyaml
+pathlib
