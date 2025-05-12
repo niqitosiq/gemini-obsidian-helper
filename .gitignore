@@ -1,50 +1,12 @@
-# Environment variables and secrets
+node_modules
 .env
-*.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
 
-# Python cache files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
+vault
 
-# Personal data
-knowledge_base.md
-vault/
-conversation_history.json
-global_recurring_events.json
-temp_audio/
-
-# Operating system files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# IDE files
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Docker files
-.dockerignore
+dist
