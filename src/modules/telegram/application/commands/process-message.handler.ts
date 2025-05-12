@@ -1,16 +1,21 @@
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
 import { ProcessMessageCommand } from './process-message.command';
 import { LlmProcessorService } from '../../../llm/application/services/llm-processor.service';
-import { Inject } from '@nestjs/common';
+import { Inject, Logger, forwardRef } from '@nestjs/common';
 import { IVaultService } from '../../../vault/domain/interfaces/vault-service.interface';
 import { ITelegramService } from '../../domain/interfaces/telegram-service.interface';
+import { ToolsRegistryService } from '../../../tools/application/services/tools-registry.service';
 
 @CommandHandler(ProcessMessageCommand)
 export class ProcessMessageHandler implements ICommandHandler<ProcessMessageCommand> {
+  private readonly logger = new Logger(ProcessMessageHandler.name);
+
   constructor(
+    @Inject(forwardRef(() => LlmProcessorService))
     private readonly llmProcessor: LlmProcessorService,
     @Inject('IVaultService') private readonly vaultService: IVaultService,
     @Inject('ITelegramService') private readonly telegramService: ITelegramService,
+    private readonly toolsRegistry: ToolsRegistryService,
   ) {}
 
   async execute(command: ProcessMessageCommand): Promise<void> {
@@ -32,33 +37,41 @@ export class ProcessMessageHandler implements ICommandHandler<ProcessMessageComm
         }
       }
     } catch (error) {
-      console.error('Error reading vault files:', error);
+      this.logger.error('Error reading vault files:', error);
     }
 
-    // Process the message
-    const result = await this.llmProcessor.processUserMessage(text, userId, vaultContext);
+    try {
+      // Process the message
+      const result = await this.llmProcessor.processUserMessage(text, userId, vaultContext);
 
-    // Handle the result
-    if (result.error) {
-      await this.telegramService.sendMessage(chatId, `Error: ${result.error}`);
-      return;
+      // Execute each tool call
+      if (result.toolCalls && Array.isArray(result.toolCalls) && result.toolCalls.length > 0) {
+        this.logger.debug(`Executing ${result.toolCalls.length} tool calls`);
+        for (const toolCall of result.toolCalls) {
+          const { tool, params } = toolCall;
+          this.logger.debug(`Executing tool: ${tool}`);
+
+          // Add chat_id to params if not present for appropriate tools
+          if (tool === 'reply' && params && !params.chat_id) {
+            params.chat_id = chatId;
+          }
+
+          await this.toolsRegistry.executeTool(tool, params);
+        }
+      } else {
+        // Fallback error case - should never happen with updated LlmProcessorService
+        this.logger.error('No tool calls returned from LLM processor');
+        await this.toolsRegistry.executeTool('reply', {
+          message: 'Error: Received your message, but no valid response was generated.',
+          chat_id: chatId,
+        });
+      }
+    } catch (error) {
+      this.logger.error(`Error in ProcessMessageHandler: ${error.message}`, error.stack);
+      await this.toolsRegistry.executeTool('reply', {
+        message: `Error processing your message: ${error.message}`,
+        chat_id: chatId,
+      });
     }
-
-    if (result.text) {
-      await this.telegramService.sendMessage(chatId, result.text);
-      return;
-    }
-
-    if (result.toolCalls && Array.isArray(result.toolCalls)) {
-      // In a full implementation, we would handle tool calls here
-      await this.telegramService.sendMessage(chatId, 'Processing tool calls...');
-      return;
-    }
-
-    // Fallback
-    await this.telegramService.sendMessage(
-      chatId,
-      'Received your message, but no response was generated.',
-    );
   }
 }

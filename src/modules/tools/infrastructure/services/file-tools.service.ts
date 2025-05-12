@@ -1,45 +1,49 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { IToolHandler } from '../../domain/interfaces/tool-handler.interface';
-import { IVaultService } from '../../../vault/domain/interfaces/vault-service.interface';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { FilePathService } from './file-path.service';
 
+/**
+ * Tool implementation for creating files
+ */
 @Injectable()
 export class CreateFileToolHandler implements IToolHandler {
-  constructor(@Inject('IVaultService') private readonly vaultService: IVaultService) {}
+  constructor(private readonly filePathService: FilePathService) {}
 
+  /**
+   * Create a file with the given path and content
+   *
+   * @param params - Object containing file_path and content
+   * @returns Result of the operation
+   */
   async execute(params: Record<string, any>): Promise<Record<string, any>> {
-    const { path, content } = params;
-
-    if (!path || typeof path !== 'string') {
-      return {
-        status: 'error',
-        message: 'Path parameter is required and must be a string',
-      };
-    }
-
-    if (content === undefined || content === null) {
-      return {
-        status: 'error',
-        message: 'Content parameter is required',
-      };
-    }
-
-    const contentStr = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-
     try {
-      const success = await this.vaultService.createFile(path, contentStr);
+      const { file_path, content } = params;
 
-      if (success) {
-        return {
-          status: 'success',
-          message: `File created successfully at ${path}`,
-          path,
-        };
-      } else {
+      if (!file_path || !content) {
         return {
           status: 'error',
-          message: `Failed to create file at ${path}`,
+          message: 'Missing required parameters: file_path and content',
         };
       }
+
+      // Resolve the absolute file path using the base path
+      const absoluteFilePath = this.filePathService.resolveFilePath(file_path);
+
+      // Ensure directory exists
+      const dirPath = path.dirname(absoluteFilePath);
+      await fs.mkdir(dirPath, { recursive: true });
+
+      // Write file content
+      await fs.writeFile(absoluteFilePath, content, 'utf8');
+
+      return {
+        status: 'success',
+        message: `File created successfully: ${file_path}`,
+        file_path,
+        absolute_path: absoluteFilePath,
+      };
     } catch (error) {
       return {
         status: 'error',
@@ -49,54 +53,52 @@ export class CreateFileToolHandler implements IToolHandler {
   }
 }
 
+/**
+ * Tool implementation for modifying existing files
+ */
 @Injectable()
 export class ModifyFileToolHandler implements IToolHandler {
-  constructor(@Inject('IVaultService') private readonly vaultService: IVaultService) {}
+  constructor(private readonly filePathService: FilePathService) {}
 
+  /**
+   * Modify an existing file with new content
+   *
+   * @param params - Object containing file_path and content
+   * @returns Result of the operation
+   */
   async execute(params: Record<string, any>): Promise<Record<string, any>> {
-    const { path, content } = params;
-
-    if (!path || typeof path !== 'string') {
-      return {
-        status: 'error',
-        message: 'Path parameter is required and must be a string',
-      };
-    }
-
-    if (content === undefined || content === null) {
-      return {
-        status: 'error',
-        message: 'Content parameter is required',
-      };
-    }
-
-    const contentStr = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-
     try {
+      const { file_path, content } = params;
+
+      if (!file_path || content === undefined) {
+        return {
+          status: 'error',
+          message: 'Missing required parameters: file_path and content',
+        };
+      }
+
+      // Resolve the absolute file path using the base path
+      const absoluteFilePath = this.filePathService.resolveFilePath(file_path);
+
       // Check if file exists
-      const exists = await this.vaultService.fileExists(path);
-
-      if (!exists) {
+      try {
+        await fs.access(absoluteFilePath);
+      } catch (error) {
         return {
           status: 'error',
-          message: `File does not exist at ${path}`,
+          message: `File not found: ${file_path} (${absoluteFilePath})`,
         };
       }
 
-      const success = await this.vaultService.modifyFile(path, contentStr);
+      // Write new content to file
+      await fs.writeFile(absoluteFilePath, content, 'utf8');
 
-      if (success) {
-        return {
-          status: 'success',
-          message: `File modified successfully at ${path}`,
-          path,
-        };
-      } else {
-        return {
-          status: 'error',
-          message: `Failed to modify file at ${path}`,
-        };
-      }
+      return {
+        status: 'success',
+        message: `File modified successfully: ${file_path}`,
+        file_path,
+        absolute_path: absoluteFilePath,
+      };
     } catch (error) {
       return {
         status: 'error',
@@ -106,50 +108,122 @@ export class ModifyFileToolHandler implements IToolHandler {
   }
 }
 
+/**
+ * Tool implementation for deleting files
+ */
 @Injectable()
 export class DeleteFileToolHandler implements IToolHandler {
-  constructor(@Inject('IVaultService') private readonly vaultService: IVaultService) {}
+  constructor(private readonly filePathService: FilePathService) {}
 
+  /**
+   * Delete a file at the given path
+   *
+   * @param params - Object containing file_path
+   * @returns Result of the operation
+   */
   async execute(params: Record<string, any>): Promise<Record<string, any>> {
-    const { path } = params;
-
-    if (!path || typeof path !== 'string') {
-      return {
-        status: 'error',
-        message: 'Path parameter is required and must be a string',
-      };
-    }
-
     try {
+      const { file_path } = params;
+
+      if (!file_path) {
+        return {
+          status: 'error',
+          message: 'Missing required parameter: file_path',
+        };
+      }
+
+      // Resolve the absolute file path using the base path
+      const absoluteFilePath = this.filePathService.resolveFilePath(file_path);
+
       // Check if file exists
-      const exists = await this.vaultService.fileExists(path);
-
-      if (!exists) {
+      try {
+        await fs.access(absoluteFilePath);
+      } catch (error) {
         return {
           status: 'error',
-          message: `File does not exist at ${path}`,
+          message: `File not found: ${file_path} (${absoluteFilePath})`,
         };
       }
 
-      const success = await this.vaultService.deleteFile(path);
+      // Delete the file
+      await fs.unlink(absoluteFilePath);
 
-      if (success) {
-        return {
-          status: 'success',
-          message: `File deleted successfully at ${path}`,
-          path,
-        };
-      } else {
-        return {
-          status: 'error',
-          message: `Failed to delete file at ${path}`,
-        };
-      }
+      return {
+        status: 'success',
+        message: `File deleted successfully: ${file_path}`,
+        file_path,
+        absolute_path: absoluteFilePath,
+      };
     } catch (error) {
       return {
         status: 'error',
         message: `Error deleting file: ${error.message || error}`,
       };
     }
+  }
+}
+
+/**
+ * Tool implementation for sending replies to the user
+ */
+@Injectable()
+export class ReplyToolHandler implements IToolHandler {
+  constructor(@Inject('ITelegramService') private readonly telegramService: any) {}
+
+  /**
+   * Send a reply message to the user
+   *
+   * @param params - Object containing message content
+   * @returns Result of the operation
+   */
+  async execute(params: Record<string, any>): Promise<Record<string, any>> {
+    try {
+      const { message, chat_id } = params;
+
+      if (!message) {
+        return {
+          status: 'error',
+          message: 'Missing required parameter: message',
+        };
+      }
+
+      // If chat_id is provided, send to that specific chat
+      if (chat_id) {
+        await this.telegramService.sendMessage(chat_id, message);
+      } else {
+        // Otherwise reply to current context
+        await this.telegramService.replyToCurrentMessage(message);
+      }
+
+      return {
+        status: 'success',
+        message: 'Reply sent successfully',
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        message: `Error sending reply: ${error.message || error}`,
+      };
+    }
+  }
+}
+
+/**
+ * Tool implementation for ending the conversation
+ */
+@Injectable()
+export class FinishToolHandler implements IToolHandler {
+  /**
+   * Mark the conversation as finished
+   *
+   * @param params - No parameters required
+   * @returns Result of the operation
+   */
+  async execute(params: Record<string, any>): Promise<Record<string, any>> {
+    return {
+      status: 'success',
+      message: 'Conversation finished',
+      finished: true,
+    };
   }
 }

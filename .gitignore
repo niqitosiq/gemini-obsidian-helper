@@ -10,3 +10,4 @@ node_modules
 vault
 
 dist
+conversation_history.json

@@ -4,17 +4,28 @@ import { ConfigModule } from '@nestjs/config';
 import { ProcessMessageCommand } from '../../src/modules/telegram/application/commands/process-message.command';
 import { ProcessMessageHandler } from '../../src/modules/telegram/application/commands/process-message.handler';
 import { LlmProcessorService } from '../../src/modules/llm/application/services/llm-processor.service';
+import { ToolsRegistryService } from '../../src/modules/tools/application/services/tools-registry.service';
 
 describe('CommandBus Registration', () => {
   let commandBus: CommandBus;
   let llmProcessorService: LlmProcessorService;
   let telegramService: any;
   let vaultService: any;
+  let toolsRegistry: any;
 
   beforeEach(async () => {
     // Mock services
     const mockLlmProcessorService = {
-      processUserMessage: jest.fn().mockResolvedValue({ text: 'Test response' }),
+      processUserMessage: jest.fn().mockResolvedValue({
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: 'Test response',
+            },
+          },
+        ],
+      }),
     };
 
     const mockTelegramService = {
@@ -23,6 +34,12 @@ describe('CommandBus Registration', () => {
 
     const mockVaultService = {
       readAllMarkdownFiles: jest.fn().mockResolvedValue({}),
+    };
+
+    const mockToolsRegistry = {
+      executeTool: jest.fn().mockResolvedValue({}),
+      getAvailableTools: jest.fn().mockReturnValue([]),
+      getToolDefinitions: jest.fn().mockReturnValue([]),
     };
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -47,6 +64,10 @@ describe('CommandBus Registration', () => {
           provide: 'IVaultService',
           useValue: mockVaultService,
         },
+        {
+          provide: ToolsRegistryService,
+          useValue: mockToolsRegistry,
+        },
       ],
     }).compile();
 
@@ -54,6 +75,7 @@ describe('CommandBus Registration', () => {
     llmProcessorService = moduleFixture.get<LlmProcessorService>(LlmProcessorService);
     telegramService = moduleFixture.get('ITelegramService');
     vaultService = moduleFixture.get('IVaultService');
+    toolsRegistry = moduleFixture.get(ToolsRegistryService);
 
     // Register the command handler manually
     commandBus.register([ProcessMessageHandler]);
@@ -80,6 +102,6 @@ describe('CommandBus Registration', () => {
       userId,
       undefined,
     );
-    expect(telegramService.sendMessage).toHaveBeenCalledWith(chatId, 'Test response');
+    expect(toolsRegistry.executeTool).toHaveBeenCalledWith('reply', { message: 'Test response' });
   });
 });

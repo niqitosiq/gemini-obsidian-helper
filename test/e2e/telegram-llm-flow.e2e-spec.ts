@@ -11,6 +11,7 @@ import { LlmProcessorService } from '../../src/modules/llm/application/services/
 import { ITelegramService } from '../../src/modules/telegram/domain/interfaces/telegram-service.interface';
 import { IVaultService } from '../../src/modules/vault/domain/interfaces/vault-service.interface';
 import { ProcessMessageHandler } from '../../src/modules/telegram/application/commands/process-message.handler';
+import { ToolsRegistryService } from '../../src/modules/tools/application/services/tools-registry.service';
 
 interface MockTelegramService extends ITelegramService {
   sendMessage: jest.Mock;
@@ -62,6 +63,12 @@ describe('Telegram-LLM Flow (e2e)', () => {
       .useValue(mockTelegramService)
       .overrideProvider('IVaultService')
       .useValue(mockVaultService)
+      .overrideProvider(ToolsRegistryService)
+      .useValue({
+        executeTool: jest.fn().mockResolvedValue({}),
+        getAvailableTools: jest.fn().mockReturnValue([]),
+        getToolDefinitions: jest.fn().mockReturnValue([]),
+      })
       .compile();
 
     // We don't need to initialize the app for these tests as we're directly using the CommandBus
@@ -290,7 +297,16 @@ describe('Telegram-LLM Flow (e2e)', () => {
     const chatId = 123456789;
     const userId = 987654321;
     const userMessage = 'привет, бро, меня зовут Никита, ты мой помощник!';
-    const llmResponse = { text: 'Привет, Никита! Я твой помощник. Чем могу помочь?' };
+    const llmResponse = {
+      toolCalls: [
+        {
+          tool: 'reply',
+          params: {
+            message: 'Привет, Никита! Я твой помощник. Чем могу помочь?',
+          },
+        },
+      ],
+    };
 
     // Create a real module with proper command handler registration
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -324,6 +340,14 @@ describe('Telegram-LLM Flow (e2e)', () => {
           },
         },
         {
+          provide: ToolsRegistryService,
+          useValue: {
+            executeTool: jest.fn().mockResolvedValue({}),
+            getAvailableTools: jest.fn().mockReturnValue([]),
+            getToolDefinitions: jest.fn().mockReturnValue([]),
+          },
+        },
+        {
           provide: CommandBus,
           useFactory: () => {
             const commandHandlers = new Map();
@@ -334,6 +358,7 @@ describe('Telegram-LLM Flow (e2e)', () => {
                   moduleFixture.get(LlmProcessorService),
                   moduleFixture.get('IVaultService'),
                   moduleFixture.get('ITelegramService'),
+                  moduleFixture.get(ToolsRegistryService),
                 );
                 return handler.execute(command);
               },
@@ -368,6 +393,8 @@ describe('Telegram-LLM Flow (e2e)', () => {
     );
 
     // Assert
-    expect(mockTelegramService.sendMessage).toHaveBeenCalledWith(chatId, llmResponse.text);
+    expect(moduleFixture.get(ToolsRegistryService).executeTool).toHaveBeenCalledWith('reply', {
+      message: 'Привет, Никита! Я твой помощник. Чем могу помочь?',
+    });
   });
 });
