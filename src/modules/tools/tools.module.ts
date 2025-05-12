@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { CqrsModule } from '@nestjs/cqrs';
 import {
   CreateFileToolHandler,
   ModifyFileToolHandler,
@@ -11,9 +12,12 @@ import { VaultModule } from '../vault/vault.module';
 import { ToolsRegistryService } from './application/services/tools-registry.service';
 import { TelegramModule } from '../telegram/telegram.module';
 import { ConfigModule } from '@nestjs/config';
+import { SharedModule } from '../../shared/shared.module';
+// import { SendMessageHandler } from '../telegram/application/commands/send-message.handler';
+import { DiscoveryModule } from '@nestjs/core';
 
 @Module({
-  imports: [ConfigModule, VaultModule, forwardRef(() => TelegramModule)],
+  imports: [SharedModule, VaultModule, DiscoveryModule, CqrsModule],
   providers: [
     FilePathService,
     CreateFileToolHandler,
@@ -22,34 +26,9 @@ import { ConfigModule } from '@nestjs/config';
     ReplyToolHandler,
     FinishToolHandler,
     ToolsRegistryService,
-    {
-      provide: 'CreateFileTool',
-      useExisting: CreateFileToolHandler,
-    },
-    {
-      provide: 'ModifyFileTool',
-      useExisting: ModifyFileToolHandler,
-    },
-    {
-      provide: 'DeleteFileTool',
-      useExisting: DeleteFileToolHandler,
-    },
-    {
-      provide: 'ReplyTool',
-      useExisting: ReplyToolHandler,
-    },
-    {
-      provide: 'FinishTool',
-      useExisting: FinishToolHandler,
-    },
   ],
   exports: [
     FilePathService,
-    'CreateFileTool',
-    'ModifyFileTool',
-    'DeleteFileTool',
-    'ReplyTool',
-    'FinishTool',
     ToolsRegistryService,
     CreateFileToolHandler,
     ModifyFileToolHandler,

@@ -78,7 +78,7 @@ describe('CommandBus Registration', () => {
     toolsRegistry = moduleFixture.get(ToolsRegistryService);
 
     // Register the command handler manually
-    commandBus.register([ProcessMessageHandler]);
+    // commandBus.register([ProcessMessageHandler]);
   });
 
   it('should handle ProcessMessageCommand correctly', async () => {

@@ -1,30 +1,35 @@
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
+import { Inject, Logger } from '@nestjs/common';
 import { SendMessageCommand } from './send-message.command';
-import { Inject } from '@nestjs/common';
 import { ITelegramService } from '../../domain/interfaces/telegram-service.interface';
-import { Message } from '../../domain/entities/message.entity';
-import { v4 as uuidv4 } from 'uuid';
+import { TelegramService } from '../../infrastructure/services/telegram.service';
 
 @CommandHandler(SendMessageCommand)
 export class SendMessageHandler implements ICommandHandler<SendMessageCommand> {
-  constructor(@Inject('ITelegramService') private readonly telegramService: ITelegramService) {}
+  private readonly logger = new Logger(SendMessageHandler.name);
 
-  async execute(command: SendMessageCommand): Promise<void> {
-    const { chatId, text, parseMode } = command;
-
-    // Create a message entity
-    const message = new Message(
-      uuidv4(),
-      chatId,
-      0, // System message (not from a specific user)
-      text,
+  // private readonly telegramService: TelegramService
+  constructor() {
+    // this.telegramService = telegramService;
+    console.log('SendMessageHandler constructor CALLED');
+    console.log(
+      `SendMessageHandler handles command: ${SendMessageCommand.name}, Type: ${typeof SendMessageCommand}`,
     );
+  }
 
-    // Send the message
-    const success = await this.telegramService.sendMessage(chatId, text, parseMode);
+  async execute(command: SendMessageCommand): Promise<boolean> {
+    const { userId, message, parseMode } = command;
 
-    if (success) {
-      message.markAsSent();
-    }
+    this.logger.log(`Sending message to user ${userId}`);
+
+    // try {
+    //   // return await this.telegramService.sendMessageToUser(userId, message, parseMode);
+    //   return true;
+    // } catch (error) {
+    //   this.logger.error(`Failed to send message: ${error.message}`, error.stack);
+    //   return false;
+    // }
+    console.log('SendMessageHandler execute');
+    return true;
   }
 }

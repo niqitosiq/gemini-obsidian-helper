@@ -1,15 +1,25 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleDestroy } from '@nestjs/common';
 import { IToolHandler } from '../../domain/interfaces/tool-handler.interface';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FilePathService } from './file-path.service';
+import { CommandBus, CqrsModule, EventBus } from '@nestjs/cqrs';
+import { SendMessageCommand } from '../../../telegram/application/commands/send-message.command';
+import { TelegramModule } from 'src/modules/telegram/telegram.module';
+import { ToolsModule } from '../../tools.module';
+import { DiscoveryService } from '@nestjs/core';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 
 /**
  * Tool implementation for creating files
  */
 @Injectable()
 export class CreateFileToolHandler implements IToolHandler {
-  constructor(private readonly filePathService: FilePathService) {}
+  constructor(
+    private readonly filePathService: FilePathService,
+    private readonly commandBus: CommandBus,
+  ) {}
 
   /**
    * Create a file with the given path and content
@@ -167,8 +177,20 @@ export class DeleteFileToolHandler implements IToolHandler {
  * Tool implementation for sending replies to the user
  */
 @Injectable()
-export class ReplyToolHandler implements IToolHandler {
-  constructor(@Inject('ITelegramService') private readonly telegramService: any) {}
+export class ReplyToolHandler implements IToolHandler, OnModuleDestroy {
+  private readonly logger = new Logger(ReplyToolHandler.name);
+  private destroy$ = new Subject<void>();
+
+  constructor(private readonly commandBus: CommandBus) {
+    this.commandBus.pipe(takeUntil(this.destroy$)).subscribe((event) => {
+      console.log('Event received:', event);
+    });
+  }
+
+  onModuleDestroy() {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
 
   /**
    * Send a reply message to the user
@@ -187,19 +209,56 @@ export class ReplyToolHandler implements IToolHandler {
         };
       }
 
-      // If chat_id is provided, send to that specific chat
-      if (chat_id) {
-        await this.telegramService.sendMessage(chat_id, message);
-      } else {
-        // Otherwise reply to current context
-        await this.telegramService.replyToCurrentMessage(message);
+      if (!chat_id) {
+        this.logger.warn('No chat_id provided for reply, cannot send message');
+        return {
+          status: 'error',
+          message: 'Missing required parameter: chat_id',
+        };
       }
 
-      return {
-        status: 'success',
-        message: 'Reply sent successfully',
-      };
+      const numericChatId = parseInt(chat_id, 10);
+      if (isNaN(numericChatId)) {
+        this.logger.error(`Invalid chat_id: ${chat_id}`);
+        return {
+          status: 'error',
+          message: `Invalid chat_id: ${chat_id}`,
+        };
+      }
+
+      this.logger.log(`Dispatching SendMessageCommand to chat ${numericChatId}`);
+
+      // console.log(Reflect.getMetadata('providers', ToolsModule));
+      // Use the CommandBus to dispatch the SendMessageCommand
+      // const providers = this.discoveryService.getProviders();
+      // console.log(providers);
+      console.log('ReplyToolHandler execute');
+
+      // @ts-ignore
+      // console.log(this.commandBus.moduleRef);
+
+      const command = new SendMessageCommand(numericChatId, message, 'Markdown');
+      this.logger.log(
+        `ReplyToolHandler dispatching command: ${command.constructor.name}, Type: ${typeof command.constructor}`,
+      );
+      this.logger.log(
+        `Is SendMessageCommand class the same? ${command.constructor === SendMessageCommand}`,
+      );
+      const result = await this.commandBus.execute(command);
+
+      if (result) {
+        return {
+          status: 'success',
+          message: 'Reply sent successfully',
+        };
+      } else {
+        return {
+          status: 'error',
+          message: 'Failed to send reply',
+        };
+      }
     } catch (error) {
+      this.logger.error(`Error sending reply: ${error.message || error}`, error.stack);
       return {
         status: 'error',
         message: `Error sending reply: ${error.message || error}`,

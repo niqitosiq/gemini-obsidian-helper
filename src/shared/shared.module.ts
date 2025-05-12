@@ -6,7 +6,7 @@ import { PromptBuilderService } from './infrastructure/services/prompt-builder.s
 
 @Global()
 @Module({
-  imports: [ConfigModule],
+  imports: [],
   providers: [ConfigService, HistoryService, PromptBuilderService],
   exports: [ConfigService, HistoryService, PromptBuilderService],
 })

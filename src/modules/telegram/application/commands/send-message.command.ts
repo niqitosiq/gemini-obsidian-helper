@@ -1,11 +1,14 @@
-import { ICommand } from '../../../../core/cqrs/commands/command.interface';
+import { ICommand } from '@nestjs/cqrs';
 
-export class SendMessageCommand implements ICommand {
-  readonly _commandBrand: symbol = Symbol('SendMessageCommand');
-
+export class SendMessageCommand {
   constructor(
-    public readonly chatId: number,
-    public readonly text: string,
-    public readonly parseMode?: string,
-  ) {}
+    public readonly userId: number,
+    public readonly message: string,
+    public readonly parseMode?: 'Markdown' | 'HTML',
+  ) {
+    console.log('SendMessageCommand constructor CALLED');
+    console.log(
+      `SendMessageCommand handles command: ${SendMessageCommand.name}, Type: ${typeof SendMessageCommand}`,
+    );
+  }
 }

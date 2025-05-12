@@ -5,6 +5,7 @@ import { Inject, Logger, forwardRef } from '@nestjs/common';
 import { IVaultService } from '../../../vault/domain/interfaces/vault-service.interface';
 import { ITelegramService } from '../../domain/interfaces/telegram-service.interface';
 import { ToolsRegistryService } from '../../../tools/application/services/tools-registry.service';
+import { VaultService } from 'src/modules/vault/infrastructure/services/vault.service';
 
 @CommandHandler(ProcessMessageCommand)
 export class ProcessMessageHandler implements ICommandHandler<ProcessMessageCommand> {
@@ -13,8 +14,7 @@ export class ProcessMessageHandler implements ICommandHandler<ProcessMessageComm
   constructor(
     @Inject(forwardRef(() => LlmProcessorService))
     private readonly llmProcessor: LlmProcessorService,
-    @Inject('IVaultService') private readonly vaultService: IVaultService,
-    @Inject('ITelegramService') private readonly telegramService: ITelegramService,
+    private readonly vaultService: VaultService,
     private readonly toolsRegistry: ToolsRegistryService,
   ) {}
 

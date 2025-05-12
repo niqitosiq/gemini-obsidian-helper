@@ -358,7 +358,7 @@ describe('Telegram-LLM Flow (e2e)', () => {
                   moduleFixture.get(LlmProcessorService),
                   moduleFixture.get('IVaultService'),
                   moduleFixture.get('ITelegramService'),
-                  moduleFixture.get(ToolsRegistryService),
+                  // moduleFixture.get(ToolsRegistryService),
                 );
                 return handler.execute(command);
               },

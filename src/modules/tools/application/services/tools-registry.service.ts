@@ -1,5 +1,12 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
 import { IToolHandler } from '../../domain/interfaces/tool-handler.interface';
+import {
+  CreateFileToolHandler,
+  DeleteFileToolHandler,
+  FinishToolHandler,
+  ModifyFileToolHandler,
+  ReplyToolHandler,
+} from '../../infrastructure/services/file-tools.service';
 
 /**
  * Interface for tool definition
@@ -23,11 +30,11 @@ export class ToolsRegistryService {
   private toolDefinitions: ToolDefinition[] = [];
 
   constructor(
-    @Inject('CreateFileTool') private readonly createFileTool: IToolHandler,
-    @Inject('ModifyFileTool') private readonly modifyFileTool: IToolHandler,
-    @Inject('DeleteFileTool') private readonly deleteFileTool: IToolHandler,
-    @Inject('ReplyTool') private readonly replyTool: IToolHandler,
-    @Inject('FinishTool') private readonly finishTool: IToolHandler,
+    private readonly createFileTool: CreateFileToolHandler,
+    private readonly modifyFileTool: ModifyFileToolHandler,
+    private readonly deleteFileTool: DeleteFileToolHandler,
+    private readonly replyTool: ReplyToolHandler,
+    private readonly finishTool: FinishToolHandler,
   ) {
     this.registerBuiltInTools();
     this.initializeToolDefinitions();
