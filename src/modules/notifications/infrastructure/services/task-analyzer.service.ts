@@ -4,13 +4,16 @@ import { Task, TaskData, TaskStatus } from '../../domain/models/task.model';
 import { IVaultService } from '../../../vault/domain/interfaces/vault-service.interface';
 import * as yaml from 'yaml';
 import * as path from 'path';
+import { ConfigService } from 'src/shared/infrastructure/config/config.service';
 
 @Injectable()
 export class TaskAnalyzerService implements ITaskAnalyzerService {
   private readonly logger = new Logger(TaskAnalyzerService.name);
-  private readonly tasksFolder = '03 - Tasks';
 
-  constructor(@Inject('IVaultService') private readonly vaultService: IVaultService) {}
+  constructor(
+    @Inject('IVaultService') private readonly vaultService: IVaultService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async getTodaysTasks(): Promise<Task[]> {
     const today = new Date();
@@ -75,13 +78,15 @@ export class TaskAnalyzerService implements ITaskAnalyzerService {
   private async getAllTasks(): Promise<Task[]> {
     try {
       // Check if tasks folder exists
-      if (!(await this.vaultService.folderExists(this.tasksFolder))) {
-        this.logger.warn(`Tasks folder '${this.tasksFolder}' not found in vault`);
+      if (!(await this.vaultService.folderExists(this.configService.getTasksFolder()))) {
+        this.logger.warn(
+          `Tasks folder '${this.configService.getTasksFolder()}' not found in vault`,
+        );
         return [];
       }
 
       // Get all markdown files in the tasks folder
-      const files = await this.vaultService.listFiles(this.tasksFolder);
+      const files = await this.vaultService.listFiles(this.configService.getTasksFolder());
       if (!files || files.length === 0) {
         return [];
       }
@@ -92,12 +97,13 @@ export class TaskAnalyzerService implements ITaskAnalyzerService {
       for (const file of files) {
         if (!file.endsWith('.md')) continue;
 
-        const filePath = path.join(this.tasksFolder, file);
-        const content = await this.vaultService.readFile(filePath);
+        // Join the tasks folder path with the filename
+        const fullPath = path.join(this.configService.getTasksFolder(), file);
+        const content = await this.vaultService.readFile(fullPath);
 
         if (!content) continue;
 
-        const task = this.parseTaskFromContent(content, filePath);
+        const task = this.parseTaskFromContent(content, file);
         if (task) {
           tasks.push(task);
         }

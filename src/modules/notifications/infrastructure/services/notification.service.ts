@@ -12,6 +12,9 @@ import { HistoryEntry } from '../../../../shared/domain/models/history-entry.mod
 import { SendMessageService } from '../../../telegram/application/services/send-message.service';
 import { TaskAnalyzerService } from './task-analyzer.service';
 import { SchedulingService } from './scheduling.service';
+import { VaultService } from '../../../vault/infrastructure/services/vault.service';
+import { ProcessMessageService } from '../../../telegram/application/services/process-message.service';
+import { LlmResponse } from '../../../llm/application/services/llm-processor.service';
 
 @Injectable()
 export class NotificationService implements INotificationService, OnModuleInit {
@@ -28,7 +31,15 @@ export class NotificationService implements INotificationService, OnModuleInit {
     private readonly promptBuilder: PromptBuilderService,
     @Inject(forwardRef(() => SendMessageService))
     private readonly sendMessageService: SendMessageService,
-  ) {}
+    private readonly vaultService: VaultService,
+    private readonly processMessageService: ProcessMessageService,
+  ) {
+    // Subscribe to file change events
+    this.vaultService.fileEvents.on('fileChanged', async (filename: string) => {
+      this.logger.log(`File changed: ${filename}, resetting notifications for this file.`);
+      await this.resetAndRescheduleRemindersForFile(filename);
+    });
+  }
 
   async onModuleInit() {
     this.logger.log('Notification service initialized');
@@ -122,7 +133,7 @@ export class NotificationService implements INotificationService, OnModuleInit {
       this.logger.debug(`Task data for LLM: ${JSON.stringify(taskData)}`);
 
       // Generate personalized notification using LLM
-      const message = await this.generateTaskReminderWithLLM(taskData);
+      const llmResponse = await this.generateTaskReminderWithLLM(taskData);
 
       this.logger.log(`Generated reminder for task "${task.getTitle()}"`);
 
@@ -133,18 +144,9 @@ export class NotificationService implements INotificationService, OnModuleInit {
           if (!isNaN(numericUserId)) {
             this.logger.debug(`Sending task reminder to user ${numericUserId}`);
 
-            const result = await this.sendMessageService.sendMessage(
-              numericUserId,
-              message,
-              'Markdown',
-            );
-
-            if (!result) {
-              this.logger.warn(`Failed to send task reminder to user ${numericUserId}`);
-              success = false;
-            } else {
-              this.logger.log(`Successfully sent task reminder to user ${numericUserId}`);
-            }
+            // Execute the tool calls from the LLM response
+            // Convert numericUserId to string as required by executeToolCalls
+            await this.processMessageService.executeToolCalls(llmResponse, userId.toString());
           }
         } catch (error) {
           this.logger.error(`Error sending task reminder to user ${userId}:`, error);
@@ -190,20 +192,15 @@ export class NotificationService implements INotificationService, OnModuleInit {
       };
 
       // Generate personalized morning digest using LLM
-      const message = await this.generateMorningDigestWithLLM(digestData);
+      const llmResponse = await this.generateMorningDigestWithLLM(digestData);
 
       this.logger.log(`Generated morning digest for user ${userId}`);
 
-      // Send the digest
-      const result = await this.sendMessageService.sendMessage(userId, message, 'Markdown');
+      // Execute the tool calls from the LLM response
+      // Convert userId to string as required by executeToolCalls
+      await this.processMessageService.executeToolCalls(llmResponse, userId.toString());
 
-      if (result) {
-        this.logger.log(`Successfully sent morning digest to user ${userId}`);
-      } else {
-        this.logger.warn(`Failed to send morning digest to user ${userId}`);
-      }
-
-      return result;
+      return true;
     } catch (error) {
       this.logger.error(`Error sending morning digest: ${error.message}`, error.stack);
       return false;
@@ -243,20 +240,14 @@ export class NotificationService implements INotificationService, OnModuleInit {
       };
 
       // Generate personalized evening check-in using LLM
-      const message = await this.generateEveningCheckInWithLLM(checkInData);
+      const llmResponse = await this.generateEveningCheckInWithLLM(checkInData);
 
       this.logger.log(`Generated evening check-in for user ${userId}`);
 
-      // Send the check-in
-      const result = await this.sendMessageService.sendMessage(userId, message, 'Markdown');
+      // Execute the tool calls from the LLM response
+      await this.processMessageService.executeToolCalls(llmResponse, userId.toString());
 
-      if (result) {
-        this.logger.log(`Successfully sent evening check-in to user ${userId}`);
-      } else {
-        this.logger.warn(`Failed to send evening check-in to user ${userId}`);
-      }
-
-      return result;
+      return true;
     } catch (error) {
       this.logger.error(`Error sending evening check-in: ${error.message}`, error.stack);
       return false;
@@ -394,24 +385,41 @@ export class NotificationService implements INotificationService, OnModuleInit {
   }
 
   // LLM-based notification generators
-  private async generateTaskReminderWithLLM(taskData: any): Promise<string> {
+  private async generateTaskReminderWithLLM(taskData: any): Promise<LlmResponse> {
     try {
       // Get recent conversation history
       const history = this.historyService.getHistory();
       const formattedHistory = this.formatRecentHistory(history);
 
-      const systemInstruction = `
-        You are a personal assistant tasked with creating task reminders.
-        Create a concise, friendly reminder notification for an upcoming task.
-        Include emoji, format with Markdown, and maintain a helpful tone.
-        Include the task title, time, description (if available), priority, and status.
-        Keep the reminder under 200 words and make it motivational.
-        
-        IMPORTANT: Use ${this.userLanguage} language for your response.
-        
-        Recent conversation history for context (use this to personalize the message):
-        ${formattedHistory}
-      `;
+      const systemInstruction = `You are an AI assistant tasked with creating personalized task reminders.
+
+TASK:
+Create a concise, friendly reminder notification for an upcoming task.
+Include emoji, format with Markdown, and maintain a helpful tone.
+Include the task title, time, description (if available), priority, and status.
+Keep the reminder under 200 words and make it motivational.
+
+IMPORTANT: Use ${this.userLanguage} language for your response.
+
+Recent conversation history for context (use this to personalize the message):
+--- CONVERSATION HISTORY START ---
+${formattedHistory}
+--- CONVERSATION HISTORY END ---
+
+RESPONSE FORMAT:
+Your response MUST be valid and properly formatted for the reply tool.
+Format your response for the tool call with the following structure:
+[
+  {
+    "tool": "reply",
+    "params": {
+      "message": "Your well-formatted reminder message here"
+    }
+  }
+]
+
+Do not include any text outside the JSON structure. Ensure your message is concise, friendly, and motivational.
+`;
 
       this.logger.debug('Calling LLM to generate task reminder');
       const response = await this.llmAdapter.generateContent(
@@ -423,7 +431,17 @@ export class NotificationService implements INotificationService, OnModuleInit {
       if (!response || !response.text) {
         this.logger.warn('LLM did not return a valid response for task reminder');
         // Fallback to a simple reminder format
-        return this.createFallbackTaskReminder(taskData);
+        return {
+          toolCalls: [
+            {
+              tool: 'reply',
+              params: {
+                message: this.createFallbackTaskReminder(taskData),
+              },
+            },
+          ],
+          error: 'LLM did not return a valid response for task reminder',
+        };
       }
 
       // Add the LLM response to history
@@ -434,11 +452,48 @@ export class NotificationService implements INotificationService, OnModuleInit {
       };
       this.historyService.appendEntry(assistantEntry);
 
-      return response.text;
+      // Try to parse the response as JSON tool call
+      try {
+        const parsedResponse = JSON.parse(response.text);
+        if (
+          Array.isArray(parsedResponse) &&
+          parsedResponse.length > 0 &&
+          parsedResponse[0].tool === 'reply' &&
+          parsedResponse[0].params?.message
+        ) {
+          return {
+            toolCalls: parsedResponse,
+          };
+        }
+      } catch (e) {
+        this.logger.warn(`Failed to parse LLM response as JSON: ${e.message}`);
+      }
+
+      // If parsing failed or incorrect format, convert text to toolCalls
+      return {
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: response.text,
+            },
+          },
+        ],
+      };
     } catch (error) {
       this.logger.error(`Error generating task reminder with LLM: ${error.message}`, error.stack);
       // Fallback to a simple reminder format
-      return this.createFallbackTaskReminder(taskData);
+      return {
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: this.createFallbackTaskReminder(taskData),
+            },
+          },
+        ],
+        error: error.message || 'Error generating task reminder',
+      };
     }
   }
 
@@ -449,7 +504,435 @@ export class NotificationService implements INotificationService, OnModuleInit {
     }
 
     // English fallback
-    return `🔔 *Reminder:* ${taskData.title}\n\n${taskData.date ? `⏰ Scheduled for ${taskData.date}\n\n` : ''}${taskData.description ? `📝 ${taskData.description}\n\n` : ''}Priority: ${taskData.priority || 'Not set'}\nStatus: ${taskData.status}`;
+    return `🔔 *Reminder:* ${taskData.title}\n\n${taskData.date ? `⏰ Scheduled for ${taskData.date}\n\n` : ''}${taskData.description ? `📝 ${taskData.description}\n\n` : ''}Priority: ${this.getPriorityText(taskData.priority)}\nStatus: ${taskData.status}`;
+  }
+
+  private async generateMorningDigestWithLLM(digestData: any): Promise<LlmResponse> {
+    try {
+      // Get recent conversation history
+      const history = this.historyService.getHistory();
+      const formattedHistory = this.formatRecentHistory(history);
+
+      const systemInstruction = `You are an AI assistant tasked with creating personalized morning digests.
+
+TASK:
+Create a concise, friendly morning digest that summarizes the day's tasks and any overdue items.
+Include emoji, format with Markdown, and maintain a motivational tone.
+Include the date, list of today's tasks with their status, and any overdue tasks.
+End with a brief motivational message. Keep the digest under 300 words.
+
+IMPORTANT: Use ${this.userLanguage} language for your response.
+
+Recent conversation history for context:
+--- CONVERSATION HISTORY START ---
+${formattedHistory}
+--- CONVERSATION HISTORY END ---
+
+RESPONSE FORMAT:
+Your response MUST be valid and properly formatted for the reply tool.
+Format your response for the tool call with the following structure:
+[
+  {
+    "tool": "reply",
+    "params": {
+      "message": "Your well-formatted morning digest here"
+    }
+  }
+]
+
+Do not include any text outside the JSON structure. Ensure your message is concise, friendly, and motivational.
+`;
+
+      this.logger.debug('Calling LLM to generate morning digest');
+      const response = await this.llmAdapter.generateContent(
+        [{ text: JSON.stringify(digestData) }],
+        systemInstruction,
+        'text/plain',
+      );
+
+      if (!response || !response.text) {
+        this.logger.warn('LLM did not return a valid response for morning digest');
+        // Create a fallback digest
+        return {
+          toolCalls: [
+            {
+              tool: 'reply',
+              params: {
+                message: this.createFallbackMorningDigest(digestData),
+              },
+            },
+          ],
+          error: 'LLM did not return a valid response for morning digest',
+        };
+      }
+
+      // Add the LLM response to history
+      const assistantEntry: HistoryEntry = {
+        role: 'assistant',
+        content: response.text,
+        timestamp: new Date(),
+      };
+      this.historyService.appendEntry(assistantEntry);
+
+      // Try to parse the response as JSON tool call
+      try {
+        const parsedResponse = JSON.parse(response.text);
+        if (
+          Array.isArray(parsedResponse) &&
+          parsedResponse.length > 0 &&
+          parsedResponse[0].tool === 'reply' &&
+          parsedResponse[0].params?.message
+        ) {
+          return {
+            toolCalls: parsedResponse,
+          };
+        }
+      } catch (e) {
+        this.logger.warn(`Failed to parse LLM response as JSON: ${e.message}`);
+      }
+
+      // If parsing failed or incorrect format, convert text to toolCalls
+      return {
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: response.text,
+            },
+          },
+        ],
+      };
+    } catch (error) {
+      this.logger.error(`Error generating morning digest with LLM: ${error.message}`, error.stack);
+      // Create a fallback digest
+      return {
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: this.createFallbackMorningDigest(digestData),
+            },
+          },
+        ],
+        error: error.message || 'Error generating morning digest',
+      };
+    }
+  }
+
+  private createFallbackMorningDigest(digestData: any): string {
+    const today = new Date();
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const monthNames = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+
+    // Russian day and month names
+    const ruDayNames = [
+      'Воскресенье',
+      'Понедельник',
+      'Вторник',
+      'Среда',
+      'Четверг',
+      'Пятница',
+      'Суббота',
+    ];
+    const ruMonthNames = [
+      'Января',
+      'Февраля',
+      'Марта',
+      'Апреля',
+      'Мая',
+      'Июня',
+      'Июля',
+      'Августа',
+      'Сентября',
+      'Октября',
+      'Ноября',
+      'Декабря',
+    ];
+
+    let message = '';
+    if (this.userLanguage === 'ru') {
+      message = `🌞 *Доброе утро!* Вот ваши задачи на ${ruDayNames[today.getDay()]}, ${today.getDate()} ${ruMonthNames[today.getMonth()]}:\n\n`;
+
+      // Add today's tasks section
+      message += `*Задачи на сегодня (${digestData.todaysTasks.length}):*\n`;
+      if (digestData.todaysTasks.length > 0) {
+        digestData.todaysTasks.forEach((task: any, index: number) => {
+          const startTime = task.startTime ? ` в ${task.startTime}` : '';
+          message += `${index + 1}. ${task.completed ? '✅' : '⬜'} ${task.title}${startTime}\n`;
+        });
+      } else {
+        message += 'На сегодня нет запланированных задач.\n';
+      }
+
+      // Add overdue tasks section if any
+      if (digestData.overdueTasks.length > 0) {
+        message += `\n*Просроченные задачи (${digestData.overdueTasks.length}):*\n`;
+        digestData.overdueTasks.forEach((task: any, index: number) => {
+          message += `${index + 1}. ⚠️ ${task.title} (срок: ${task.date})\n`;
+        });
+      }
+
+      // Add motivational message
+      message += '\nЖелаю продуктивного дня! 💪';
+    } else {
+      // English fallback
+      message = `🌞 *Good morning!* Here's your task digest for ${dayNames[today.getDay()]}, ${monthNames[today.getMonth()]} ${today.getDate()}:\n\n`;
+
+      // Add today's tasks section
+      message += `*Today's Tasks (${digestData.todaysTasks.length}):*\n`;
+      if (digestData.todaysTasks.length > 0) {
+        digestData.todaysTasks.forEach((task: any, index: number) => {
+          const startTime = task.startTime ? ` at ${task.startTime}` : '';
+          message += `${index + 1}. ${task.completed ? '✅' : '⬜'} ${task.title}${startTime}\n`;
+        });
+      } else {
+        message += 'No tasks scheduled for today.\n';
+      }
+
+      // Add overdue tasks section if any
+      if (digestData.overdueTasks.length > 0) {
+        message += `\n*Overdue Tasks (${digestData.overdueTasks.length}):*\n`;
+        digestData.overdueTasks.forEach((task: any, index: number) => {
+          message += `${index + 1}. ⚠️ ${task.title} (due: ${task.date})\n`;
+        });
+      }
+
+      // Add motivational message
+      message += '\nHave a productive day! 💪';
+    }
+
+    return message;
+  }
+
+  private formatRecentHistory(history: HistoryEntry[]): string {
+    if (!history || history.length === 0) {
+      return 'No recent conversation history.';
+    }
+
+    // Limit to last 5 messages to avoid context length issues
+    const recentHistory = history.slice(-5);
+
+    return recentHistory
+      .map((entry) => {
+        const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '';
+        const role = entry.role === 'user' ? 'User' : 'Assistant';
+
+        // For assistant entries that might contain JSON tool calls, format them nicely
+        let content = entry.content;
+        if (
+          role === 'Assistant' &&
+          content.trim().startsWith('[') &&
+          content.trim().endsWith(']')
+        ) {
+          try {
+            const toolCalls = JSON.parse(content);
+            if (Array.isArray(toolCalls)) {
+              // Find reply tool calls to show in history
+              const replyTools = toolCalls.filter((tool) => tool.tool === 'reply');
+              if (replyTools.length > 0) {
+                content = replyTools.map((tool) => tool.params?.message || '').join('\n');
+              } else {
+                // If no reply tools, summarize the actions
+                content = `[Performed ${toolCalls.length} operations: ${toolCalls.map((t) => t.tool).join(', ')}]`;
+              }
+            }
+          } catch (e) {
+            // If parsing fails, use the original content
+          }
+        }
+
+        return `[${timestamp}] ${role}: ${content.substring(0, 400)}${content.length > 400 ? '...' : ''}`;
+      })
+      .join('\n\n');
+  }
+
+  private async generateEveningCheckInWithLLM(checkInData: any): Promise<LlmResponse> {
+    try {
+      // Get recent conversation history
+      const history = this.historyService.getHistory();
+      const formattedHistory = this.formatRecentHistory(history);
+
+      const systemInstruction = `You are an AI assistant tasked with creating personalized evening check-in summaries.
+
+TASK:
+Create a concise, friendly evening summary that reviews completed tasks, pending items, and postponed tasks.
+Include emoji, format with Markdown, and maintain a supportive tone.
+Include lists of completed tasks, pending tasks, and postponed tasks.
+End with a reflection prompt. Keep the check-in under 300 words.
+
+IMPORTANT: Use ${this.userLanguage} language for your response.
+
+Recent conversation history for context:
+--- CONVERSATION HISTORY START ---
+${formattedHistory}
+--- CONVERSATION HISTORY END ---
+
+RESPONSE FORMAT:
+Your response MUST be valid and properly formatted for the reply tool.
+Format your response for the tool call with the following structure:
+[
+  {
+    "tool": "reply",
+    "params": {
+      "message": "Your well-formatted evening check-in here"
+    }
+  }
+]
+
+Do not include any text outside the JSON structure. Ensure your message is concise, friendly, and supportive.
+`;
+
+      this.logger.debug('Calling LLM to generate evening check-in');
+      const response = await this.llmAdapter.generateContent(
+        [{ text: JSON.stringify(checkInData) }],
+        systemInstruction,
+        'text/plain',
+      );
+
+      if (!response || !response.text) {
+        this.logger.warn('LLM did not return a valid response for evening check-in');
+        // Create a fallback check-in
+        return {
+          toolCalls: [
+            {
+              tool: 'reply',
+              params: {
+                message: this.createFallbackEveningCheckIn(checkInData),
+              },
+            },
+          ],
+          error: 'LLM did not return a valid response for evening check-in',
+        };
+      }
+
+      // Add the LLM response to history
+      const assistantEntry: HistoryEntry = {
+        role: 'assistant',
+        content: response.text,
+        timestamp: new Date(),
+      };
+      this.historyService.appendEntry(assistantEntry);
+
+      // Try to parse the response as JSON tool call
+      try {
+        const parsedResponse = JSON.parse(response.text);
+        if (
+          Array.isArray(parsedResponse) &&
+          parsedResponse.length > 0 &&
+          parsedResponse[0].tool === 'reply' &&
+          parsedResponse[0].params?.message
+        ) {
+          return {
+            toolCalls: parsedResponse,
+          };
+        }
+      } catch (e) {
+        this.logger.warn(`Failed to parse LLM response as JSON: ${e.message}`);
+      }
+
+      // If parsing failed or incorrect format, convert text to toolCalls
+      return {
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: response.text,
+            },
+          },
+        ],
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error generating evening check-in with LLM: ${error.message}`,
+        error.stack,
+      );
+      // Create a fallback check-in
+      return {
+        toolCalls: [
+          {
+            tool: 'reply',
+            params: {
+              message: this.createFallbackEveningCheckIn(checkInData),
+            },
+          },
+        ],
+        error: error.message || 'Error generating evening check-in',
+      };
+    }
+  }
+
+  private createFallbackEveningCheckIn(checkInData: any): string {
+    let message = '';
+
+    if (this.userLanguage === 'ru') {
+      message = `🌙 *Вечерняя проверка*\n\n`;
+
+      // Add completed tasks section
+      message += `*Выполнено сегодня (${checkInData.completedTasksToday.length}):*\n`;
+      if (checkInData.completedTasksToday.length > 0) {
+        checkInData.completedTasksToday.forEach((task: any, index: number) => {
+          message += `${index + 1}. ✅ ${task.title}\n`;
+        });
+      } else {
+        message += 'Сегодня не выполнено ни одной задачи.\n';
+      }
+
+      // Add uncompleted tasks section
+      message += `\n*Остаются на выполнении (${checkInData.uncompletedTasksToday.length}):*\n`;
+      if (checkInData.uncompletedTasksToday.length > 0) {
+        checkInData.uncompletedTasksToday.forEach((task: any, index: number) => {
+          message += `${index + 1}. ⬜ ${task.title}\n`;
+        });
+      } else {
+        message += 'Все задачи выполнены! Отличная работа!\n';
+      }
+
+      // Add reflection prompt
+      message +=
+        '\n*Ежедневная рефлексия:*\nКак прошел ваш день? Есть ли достижения или испытания, которые вы хотели бы отметить?';
+    } else {
+      // English version
+      message = `🌙 *Evening Check-In*\n\n`;
+
+      // Add completed tasks section
+      message += `*Completed Today (${checkInData.completedTasksToday.length}):*\n`;
+      if (checkInData.completedTasksToday.length > 0) {
+        checkInData.completedTasksToday.forEach((task: any, index: number) => {
+          message += `${index + 1}. ✅ ${task.title}\n`;
+        });
+      } else {
+        message += 'No tasks completed today.\n';
+      }
+
+      // Add uncompleted tasks section
+      message += `\n*Still Pending (${checkInData.uncompletedTasksToday.length}):*\n`;
+      if (checkInData.uncompletedTasksToday.length > 0) {
+        checkInData.uncompletedTasksToday.forEach((task: any, index: number) => {
+          message += `${index + 1}. ⬜ ${task.title}\n`;
+        });
+      } else {
+        message += 'All tasks completed! Great job!\n';
+      }
+
+      // Add reflection prompt
+      message +=
+        '\n*Daily Reflection:*\nHow was your day? Any achievements or challenges you want to note?';
+    }
+
+    return message;
   }
 
   private getPriorityText(priority?: number): string {
@@ -489,197 +972,33 @@ export class NotificationService implements INotificationService, OnModuleInit {
     }
   }
 
-  private async generateMorningDigestWithLLM(digestData: any): Promise<string> {
+  /**
+   * Reset and reschedule reminders for a specific file (task)
+   */
+  async resetAndRescheduleRemindersForFile(filename: string): Promise<void> {
     try {
-      // Get recent conversation history
-      const history = this.historyService.getHistory();
-      const formattedHistory = this.formatRecentHistory(history);
-
-      const systemInstruction = `
-        You are a personal assistant tasked with creating a morning digest of tasks.
-        Create a concise, friendly morning digest that summarizes the day's tasks and any overdue items.
-        Include emoji, format with Markdown, and maintain a motivational tone.
-        Include the date, list of today's tasks with their status, and any overdue tasks.
-        End with a brief motivational message. Keep the digest under 300 words.
-        
-        IMPORTANT: Use ${this.userLanguage} language for your response.
-        
-        Recent conversation history for context:
-        ${formattedHistory}
-      `;
-
-      this.logger.debug('Calling LLM to generate morning digest');
-      const response = await this.llmAdapter.generateContent(
-        [{ text: JSON.stringify(digestData) }],
-        systemInstruction,
-        'text/plain',
-      );
-
-      if (!response || !response.text) {
-        this.logger.warn('LLM did not return a valid response for morning digest');
-        // Create a fallback digest
-        return this.createFallbackMorningDigest(digestData);
+      this.logger.log(`Resetting and rescheduling reminders for file: ${filename}`);
+      // Remove any active reminders for this file
+      for (const [reminderId, reminder] of this.activeReminders) {
+        if (reminder.taskId && reminder.taskId.includes(filename)) {
+          this.schedulingService.unschedule(reminderId);
+          this.activeReminders.delete(reminderId);
+        }
       }
+      // Find the task for this file and reschedule reminders
+      const todaysTasks = await this.taskAnalyzer.getTodaysTasks();
 
-      // Add the LLM response to history
-      const assistantEntry: HistoryEntry = {
-        role: 'assistant',
-        content: response.text,
-        timestamp: new Date(),
-      };
-      this.historyService.appendEntry(assistantEntry);
-
-      return response.text;
-    } catch (error) {
-      this.logger.error(`Error generating morning digest with LLM: ${error.message}`, error.stack);
-      // Create a fallback digest
-      return this.createFallbackMorningDigest(digestData);
-    }
-  }
-
-  private async generateEveningCheckInWithLLM(checkInData: any): Promise<string> {
-    try {
-      // Get recent conversation history
-      const history = this.historyService.getHistory();
-      const formattedHistory = this.formatRecentHistory(history);
-
-      const systemInstruction = `
-        You are a personal assistant tasked with creating an evening check-in summary.
-        Create a concise, friendly evening summary that reviews completed tasks, pending items, and postponed tasks.
-        Include emoji, format with Markdown, and maintain a supportive tone.
-        Include lists of completed tasks, pending tasks, and postponed tasks.
-        End with a reflection prompt. Keep the check-in under 300 words.
-        
-        IMPORTANT: Use ${this.userLanguage} language for your response.
-        
-        Recent conversation history for context:
-        ${formattedHistory}
-      `;
-
-      this.logger.debug('Calling LLM to generate evening check-in');
-      const response = await this.llmAdapter.generateContent(
-        [{ text: JSON.stringify(checkInData) }],
-        systemInstruction,
-        'text/plain',
-      );
-
-      if (!response || !response.text) {
-        this.logger.warn('LLM did not return a valid response for evening check-in');
-        // Create a fallback check-in
-        return this.createFallbackEveningCheckIn(checkInData);
+      for (const task of todaysTasks) {
+        if (!task.isCompleted()) {
+          await this.scheduleRemindersForTask(task);
+        }
       }
-
-      // Add the LLM response to history
-      const assistantEntry: HistoryEntry = {
-        role: 'assistant',
-        content: response.text,
-        timestamp: new Date(),
-      };
-      this.historyService.appendEntry(assistantEntry);
-
-      return response.text;
+      this.logger.log(`Rescheduled reminders for file: ${filename}`);
     } catch (error) {
       this.logger.error(
-        `Error generating evening check-in with LLM: ${error.message}`,
+        `Error in resetAndRescheduleRemindersForFile: ${error.message}`,
         error.stack,
       );
-      // Create a fallback check-in
-      return this.createFallbackEveningCheckIn(checkInData);
     }
-  }
-
-  private createFallbackMorningDigest(digestData: any): string {
-    const today = new Date();
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const monthNames = [
-      'January',
-      'February',
-      'March',
-      'April',
-      'May',
-      'June',
-      'July',
-      'August',
-      'September',
-      'October',
-      'November',
-      'December',
-    ];
-
-    let message = `🌞 *Good morning!* Here's your task digest for ${dayNames[today.getDay()]}, ${monthNames[today.getMonth()]} ${today.getDate()}:\n\n`;
-
-    // Add today's tasks section
-    message += `*Today's Tasks (${digestData.todaysTasks.length}):*\n`;
-    if (digestData.todaysTasks.length > 0) {
-      digestData.todaysTasks.forEach((task: any, index: number) => {
-        const startTime = task.startTime ? ` at ${task.startTime}` : '';
-        message += `${index + 1}. ${task.completed ? '✅' : '⬜'} ${task.title}${startTime}\n`;
-      });
-    } else {
-      message += 'No tasks scheduled for today.\n';
-    }
-
-    // Add overdue tasks section if any
-    if (digestData.overdueTasks.length > 0) {
-      message += `\n*Overdue Tasks (${digestData.overdueTasks.length}):*\n`;
-      digestData.overdueTasks.forEach((task: any, index: number) => {
-        message += `${index + 1}. ⚠️ ${task.title} (due: ${task.date})\n`;
-      });
-    }
-
-    // Add motivational message
-    message += '\nHave a productive day! 💪';
-
-    return message;
-  }
-
-  private createFallbackEveningCheckIn(checkInData: any): string {
-    let message = `🌙 *Evening Check-In*\n\n`;
-
-    // Add completed tasks section
-    message += `*Completed Today (${checkInData.completedTasksToday.length}):*\n`;
-    if (checkInData.completedTasksToday.length > 0) {
-      checkInData.completedTasksToday.forEach((task: any, index: number) => {
-        message += `${index + 1}. ✅ ${task.title}\n`;
-      });
-    } else {
-      message += 'No tasks completed today.\n';
-    }
-
-    // Add uncompleted tasks section
-    message += `\n*Still Pending (${checkInData.uncompletedTasksToday.length}):*\n`;
-    if (checkInData.uncompletedTasksToday.length > 0) {
-      checkInData.uncompletedTasksToday.forEach((task: any, index: number) => {
-        message += `${index + 1}. ⬜ ${task.title}\n`;
-      });
-    } else {
-      message += 'All tasks completed! Great job!\n';
-    }
-
-    // Add recent history
-    message += `\n*Recent History:*\n${checkInData.recentHistory}\n`;
-
-    // Add reflection prompt
-    message +=
-      '\n*Daily Reflection:*\nHow was your day? Any achievements or challenges you want to note?';
-
-    return message;
-  }
-
-  // Format conversation history for LLM context
-  private formatRecentHistory(history: HistoryEntry[]): string {
-    if (!history || history.length === 0) {
-      return 'No recent conversation history.';
-    }
-
-    // Limit to last 5 messages to avoid context length issues
-    const recentHistory = history.slice(-5);
-
-    return recentHistory
-      .map((entry) => {
-        const role = entry.role === 'user' ? 'User' : 'Assistant';
-        return `${role}: ${entry.content.substring(0, 200)}${entry.content.length > 200 ? '...' : ''}`;
-      })
-      .join('\n\n');
   }
 }

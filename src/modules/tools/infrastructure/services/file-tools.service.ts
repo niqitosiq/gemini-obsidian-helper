@@ -179,12 +179,12 @@ export class ReplyToolHandler implements IToolHandler {
   /**
    * Send a reply message to the user
    *
-   * @param params - Object containing message content
+   * @param params - Object containing message content and either chat_id or user_id
    * @returns Result of the operation
    */
   async execute(params: Record<string, any>): Promise<Record<string, any>> {
     try {
-      const { message, chat_id } = params;
+      const { message, chat_id, user_id } = params;
 
       if (!message) {
         return {
@@ -193,27 +193,58 @@ export class ReplyToolHandler implements IToolHandler {
         };
       }
 
-      if (!chat_id) {
-        this.logger.warn('No chat_id provided for reply, cannot send message');
+      // Check if we have either chat_id or user_id
+      if (!chat_id && !user_id) {
+        this.logger.warn('No chat_id or user_id provided for reply, cannot send message');
         return {
           status: 'error',
-          message: 'Missing required parameter: chat_id',
+          message: 'Missing required parameter: either chat_id or user_id',
         };
       }
 
-      const numericChatId = parseInt(chat_id, 10);
-      if (isNaN(numericChatId)) {
-        this.logger.error(`Invalid chat_id: ${chat_id}`);
+      // If chat_id is provided, prioritize it
+      if (chat_id) {
+        const numericChatId = parseInt(chat_id, 10);
+        if (isNaN(numericChatId)) {
+          this.logger.error(`Invalid chat_id: ${chat_id}`);
+          return {
+            status: 'error',
+            message: `Invalid chat_id: ${chat_id}`,
+          };
+        }
+
+        this.logger.log(`Sending message to chat ${numericChatId}`);
+        const result = await this.sendMessageService.sendMessage(
+          numericChatId,
+          message,
+          'Markdown',
+        );
+
+        if (result) {
+          return {
+            status: 'success',
+            message: 'Reply sent successfully',
+          };
+        } else {
+          return {
+            status: 'error',
+            message: 'Failed to send reply',
+          };
+        }
+      }
+
+      // If we reached here, we must have a user_id but no chat_id
+      const numericUserId = parseInt(user_id, 10);
+      if (isNaN(numericUserId)) {
+        this.logger.error(`Invalid user_id: ${user_id}`);
         return {
           status: 'error',
-          message: `Invalid chat_id: ${chat_id}`,
+          message: `Invalid user_id: ${user_id}`,
         };
       }
 
-      this.logger.log(`Sending message to chat ${numericChatId}`);
-      console.log('ReplyToolHandler execute');
-
-      const result = await this.sendMessageService.sendMessage(numericChatId, message, 'Markdown');
+      this.logger.log(`Sending message to user ${numericUserId}`);
+      const result = await this.sendMessageService.sendMessage(numericUserId, message, 'Markdown');
 
       if (result) {
         return {
@@ -223,7 +254,7 @@ export class ReplyToolHandler implements IToolHandler {
       } else {
         return {
           status: 'error',
-          message: 'Failed to send reply',
+          message: 'Failed to send reply to user',
         };
       }
     } catch (error) {

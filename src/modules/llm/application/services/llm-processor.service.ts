@@ -6,7 +6,7 @@ import { PromptBuilderService } from '../../../../shared/infrastructure/services
 import { HistoryService } from '../../../../shared/infrastructure/persistence/history.service';
 import { HistoryEntry } from '../../../../shared/domain/models/history-entry.model';
 
-interface LlmResponse {
+export interface LlmResponse {
   toolCalls: any[];
   error?: string;
 }

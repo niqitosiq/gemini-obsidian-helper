@@ -4,7 +4,7 @@ import {
   GenerativeContentResponse,
   GenerativeFile,
 } from '../../domain/interfaces/llm-service.interface';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, createUserContent, createPartFromUri } from '@google/genai';
 import * as fs from 'fs';
 
 @Injectable()
@@ -49,7 +49,7 @@ export class GoogleGenaiAdapter {
 
       config.systemInstruction = systemInstruction;
 
-      const modelName = this.configService.getGeminiModelName();
+      const modelName = this.configService.getGeminiModelName() || 'gemini-2.0-flash';
 
       this.logger.debug(`Calling Gemini model: ${modelName}`);
       const response = await this.genAI.models.generateContent({
@@ -242,16 +242,38 @@ export class GoogleGenaiAdapter {
 
   async transcribeAudio(audioFilePath: string): Promise<string | null> {
     try {
-      // This is a simplified implementation
-      // In a real app, you'd use a proper audio transcription API
-      const file = this.uploadFile(audioFilePath);
-      if (!file) return null;
-
-      // For now, return a placeholder message
-      return 'Audio transcription is not implemented in this adapter';
+      // Upload the audio file to Gemini
+      const mimeType = this.getMimeType(audioFilePath);
+      const myfile = await this.genAI.files.upload({
+        file: String(audioFilePath),
+        config: { mimeType },
+      });
+      // Prepare the prompt for transcription
+      const prompt = 'Generate a transcript of the speech.';
+      // Ensure model name is always a string
+      const modelName = this.configService.getGeminiModelName() || 'gemini-2.0-flash';
+      // Send the file and prompt to Gemini
+      const response = await this.genAI.models.generateContent({
+        model: modelName,
+        contents: createUserContent([createPartFromUri(myfile.uri!, myfile.mimeType!), prompt]),
+      });
+      return response.text || null;
     } catch (error) {
-      this.logger.error('Error transcribing audio:', error);
+      this.logger.error('Error transcribing audio with Gemini:', error);
       return null;
     }
+  }
+
+  /**
+   * Get the MIME type for a given audio file path
+   */
+  private getMimeType(filePath: string): string {
+    if (filePath.endsWith('.mp3')) return 'audio/mp3';
+    if (filePath.endsWith('.wav')) return 'audio/wav';
+    if (filePath.endsWith('.ogg')) return 'audio/ogg';
+    if (filePath.endsWith('.aac')) return 'audio/aac';
+    if (filePath.endsWith('.flac')) return 'audio/flac';
+    if (filePath.endsWith('.aiff')) return 'audio/aiff';
+    return 'application/octet-stream';
   }
 }

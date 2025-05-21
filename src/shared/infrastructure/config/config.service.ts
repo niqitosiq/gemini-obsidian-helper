@@ -41,8 +41,10 @@ export class ConfigService implements IConfigService {
       .filter(Boolean);
   }
 
-  getObsidianVaultPath(): string | undefined {
-    return this.getStr('OBSIDIAN_VAULT_PATH');
+  getObsidianVaultPath(): string {
+    const path = this.getStr('OBSIDIAN_VAULT_PATH')!;
+    // Remove any quotes that might be in the string
+    return path ? path.replace(/^["'](.*)["']$/, '$1') : '';
   }
 
   getObsidianDailyNotesFolder(): string | undefined {
@@ -51,5 +53,9 @@ export class ConfigService implements IConfigService {
 
   getPort(): number {
     return this.configService.get<number>('PORT', 3000);
+  }
+
+  getTasksFolder(): string {
+    return this.getStr('TASKS_FOLDER', '03 - Tasks')!;
   }
 }

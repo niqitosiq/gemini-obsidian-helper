@@ -57,4 +57,13 @@ export class GeminiService implements ILLMService {
 
     return 'Transcription in progress...';
   }
+
+  /**
+   * Transcribe audio file using Gemini (Google GenAI)
+   * @param audioFilePath Path to the audio file
+   * @returns Transcription string or null
+   */
+  async transcribeAudioAsync(audioFilePath: string): Promise<string | null> {
+    return this.genaiAdapter.transcribeAudio(audioFilePath);
+  }
 }

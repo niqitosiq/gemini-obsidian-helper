@@ -7,6 +7,9 @@ import { ModuleRef } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { INotificationService } from '../../../notifications/domain/interfaces/notification-service.interface';
 import { NotificationService } from 'src/modules/notifications/infrastructure/services/notification.service';
+import { GeminiService } from '../../../llm/infrastructure/services/gemini.service';
+import * as path from 'path';
+import * as fs from 'fs';
 
 @Injectable()
 export class TelegramAppService implements OnModuleInit, OnModuleDestroy {
@@ -20,6 +23,7 @@ export class TelegramAppService implements OnModuleInit, OnModuleDestroy {
     private readonly moduleRef: ModuleRef,
     @Inject(forwardRef(() => NotificationService))
     private readonly notificationService: NotificationService,
+    private readonly geminiService: GeminiService,
   ) {
     // Get allowed user IDs from config
     const userIds = this.configService.getTelegramUserIds();
@@ -35,7 +39,6 @@ export class TelegramAppService implements OnModuleInit, OnModuleDestroy {
 
       // Check if user is allowed
       if (!userId || !this.allowedUserIds.includes(userId)) {
-        console.log(`Unauthorized access attempt from user ID: ${userId}`);
         return;
       }
 
@@ -61,9 +64,44 @@ export class TelegramAppService implements OnModuleInit, OnModuleDestroy {
 
       // Process voice messages
       else if (ctx.message && 'voice' in ctx.message && ctx.message.voice) {
-        // In a full implementation, we would handle voice messages here
-        // by downloading the file and transcribing it
-        await ctx.reply('Voice message processing is not implemented yet.');
+        try {
+          const fileId = ctx.message.voice.file_id;
+          const chatId = ctx.chat.id;
+          const userId = ctx.from?.id;
+          // Use a temp file path
+          const tempDir = path.join(process.cwd(), 'temp');
+          if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir);
+          }
+          const tempFilePath = path.join(tempDir, `${fileId}.ogg`);
+          await ctx.reply('⏳ Downloading and transcribing your voice message...');
+          await this.telegramService.downloadFile(fileId, tempFilePath);
+          // Transcribe using Gemini
+          let transcription: string | null = null;
+          try {
+            transcription = await this.geminiService.transcribeAudioAsync(tempFilePath);
+          } catch (err) {
+            this.logger.error('Error during Gemini transcription:', err);
+          }
+          // Clean up temp file
+          try {
+            fs.unlinkSync(tempFilePath);
+          } catch {}
+          if (
+            transcription &&
+            typeof transcription === 'string' &&
+            transcription !== 'Audio transcription is not implemented in this adapter'
+          ) {
+            // Pass transcription to processMessageService as if it were a text message
+            const messageDto = new MessageDto(chatId, userId, transcription);
+            await this.processMessageService.processMessage(messageDto);
+          } else {
+            await ctx.reply('❌ Sorry, could not transcribe the audio.');
+          }
+        } catch (error) {
+          this.logger.error('Error handling voice message:', error);
+          await ctx.reply('❌ Error processing your voice message.');
+        }
       }
     });
 
