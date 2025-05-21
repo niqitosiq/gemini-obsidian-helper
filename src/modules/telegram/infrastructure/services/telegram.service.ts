@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ITelegramService } from '../../domain/interfaces/telegram-service.interface';
 import { ConfigService } from '../../../../shared/infrastructure/config/config.service';
 import { Telegraf, Context } from 'telegraf';
+import * as https from 'https';
+import * as fs from 'fs';
 
 type ParseMode = 'Markdown' | 'MarkdownV2' | 'HTML';
 
@@ -180,5 +182,44 @@ export class TelegramService implements ITelegramService {
 
   getBot(): Telegraf<Context> {
     return this.bot;
+  }
+
+  /**
+   * Download a file from Telegram servers using file_id
+   * @param fileId Telegram file_id
+   * @param destPath Local destination path
+   * @returns The local file path if successful
+   */
+  async downloadFile(fileId: string, destPath: string): Promise<string> {
+    try {
+      // Get file info from Telegram
+      const file = await this.bot.telegram.getFile(fileId);
+      if (!file || !file.file_path) {
+        throw new Error('Could not get file path from Telegram');
+      }
+      const token = this.configService.getTelegramBotToken();
+      const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+
+      // Download the file
+      await new Promise<void>((resolve, reject) => {
+        const fileStream = fs.createWriteStream(destPath);
+        https
+          .get(fileUrl, (response) => {
+            response.pipe(fileStream);
+            fileStream.on('finish', () => {
+              fileStream.close();
+              resolve();
+            });
+          })
+          .on('error', (err) => {
+            fs.unlink(destPath, () => {});
+            reject(err);
+          });
+      });
+      return destPath;
+    } catch (error) {
+      console.error('Error downloading file from Telegram:', error);
+      throw error;
+    }
   }
 }

@@ -1,22 +1,23 @@
-import { Module } from '@nestjs/common';
-import { CqrsModule } from '@nestjs/cqrs';
+import { Module, forwardRef } from '@nestjs/common';
 import { TelegramService } from './infrastructure/services/telegram.service';
 import { TelegramAppService } from './application/services/telegram-app.service';
-import { CommandHandlers } from './application/commands';
+import { ProcessMessageService } from './application/services/process-message.service';
 import { LlmModule } from '../llm/llm.module';
 import { VaultModule } from '../vault/vault.module';
+import { ToolsModule } from '../tools/tools.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { SharedModule } from '../../shared/shared.module';
+import { SendMessageService } from './application/services/send-message.service';
 
 @Module({
-  imports: [CqrsModule, LlmModule, VaultModule],
-  providers: [
-    TelegramService,
-    TelegramAppService,
-    ...CommandHandlers,
-    {
-      provide: 'ITelegramService',
-      useExisting: TelegramService,
-    },
+  imports: [
+    SharedModule,
+    forwardRef(() => LlmModule),
+    VaultModule,
+    forwardRef(() => ToolsModule),
+    forwardRef(() => NotificationsModule),
   ],
-  exports: ['ITelegramService', TelegramService, TelegramAppService],
+  providers: [TelegramService, TelegramAppService, SendMessageService, ProcessMessageService],
+  exports: [TelegramService, TelegramAppService, SendMessageService],
 })
 export class TelegramModule {}

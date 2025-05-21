@@ -1,0 +1,118 @@
+# Cursor Usage Rules for Productive-LLM Project
+
+## Overview
+
+This document outlines best practices and guidelines for using Cursor AI within our NestJS Domain-Driven Design (DDD) project. Following these practices will help maintain code quality, consistency, and efficiency.
+
+## Best Practices
+
+### 1. Code Generation
+
+- **Follow DDD Principles**: When generating code, ensure it adheres to our domain-driven design architecture:
+  - Domain layer: For business entities and logic 
+  - Application layer: For use cases and orchestration
+  - Infrastructure layer: For external services and implementations
+  - Interface layer: For controllers, DTOs, and view models
+
+- **Type Safety**: Always generate strongly-typed code. Avoid using `any` types unless absolutely necessary.
+
+- **Respect Module Boundaries**: Generated code should respect module boundaries. Don't create cross-module dependencies without proper imports.
+
+- **Documentation**: Include JSDoc comments for public methods, classes, and interfaces.
+
+### 2. Code Modifications
+
+- **Maintain Existing Patterns**: When modifying existing code, follow established patterns and coding conventions in the file.
+
+- **Respect Interfaces**: Ensure implementations correctly fulfill their interfaces.
+
+- **Update Tests**: When modifying code, be prepared to update any corresponding tests.
+
+### 3. Project Structure
+
+- **File Organization**: 
+  ```
+  src/
+    modules/
+      module-name/
+        domain/
+          entities/
+          value-objects/
+          interfaces/
+        application/
+          commands/
+          queries/
+          services/
+        infrastructure/
+          adapters/
+          services/
+        interface/
+          controllers/
+          dtos/
+    shared/
+      domain/
+      infrastructure/
+  ```
+
+- **Naming Conventions**:
+  - Entities: PascalCase, noun (e.g., `User`)
+  - Interfaces: PascalCase with 'I' prefix (e.g., `IUserService`)
+  - Commands/Queries: PascalCase, verb + noun + Command/Query (e.g., `CreateUserCommand`)
+  - Services: PascalCase, noun + Service (e.g., `AuthenticationService`)
+  - Files: kebab-case (e.g., `user-service.ts`)
+
+### 4. Dependencies
+
+- **Dependency Injection**: Use NestJS dependency injection through constructor injection.
+
+- **Provider Tokens**: Use string tokens for providers only when necessary; prefer class-based providers.
+
+- **Module Dependencies**: Ensure modules properly export providers that other modules need to consume.
+
+### 5. Error Handling
+
+- **Domain Exceptions**: Use domain-specific exceptions from the core domain layer.
+
+- **Error Propagation**: Propagate errors appropriately through the layers; transform domain errors to application errors as needed.
+
+### 6. Testing
+
+- **Test Organization**: Write tests that match the organization of the source code.
+
+- **Mocks and Stubs**: Prefer dependency injection for testing; use mocks and stubs for external dependencies.
+
+### 7. API Design
+
+- **Consistent Responses**: All API endpoints should return consistent response structures.
+
+- **DTO Validation**: Use class-validator decorators for DTO validation.
+
+## Using Cursor AI Effectively
+
+- **Context Window**: Provide Cursor with enough context about the codebase before asking it to generate or modify code.
+
+- **Iterative Approach**: Use Cursor iteratively for complex tasks; start with the structure and refine with subsequent prompts.
+
+- **Code Review**: Always review Cursor-generated code before committing it to ensure it meets project standards.
+
+- **Explaining Intent**: When asking Cursor to generate code, explain the intent clearly and provide examples from the codebase when possible.
+
+## Specific to Productive-LLM Project
+
+- **LLM Tool Integration**: When implementing tools for the LLM to use, follow the `IToolHandler` interface pattern.
+
+- **Prompt Construction**: Use the `PromptBuilderService` for standardized LLM prompt construction.
+
+- **Vault Interactions**: All interactions with the Obsidian vault should go through the appropriate vault service.
+
+- **Command Processing**: Process user commands through the CQRS pattern using command handlers.
+
+## Common Issues and Solutions
+
+- **Module Resolution Errors**: Ensure that modules properly import and export their dependencies (see resolved issue with `SharedModule` not importing `ToolsModule`).
+
+- **Dependency Injection**: When encountering DI errors, check if the provider is properly registered and exported from its module.
+
+- **Circular Dependencies**: Watch for circular dependencies between modules; use interfaces and tokens to break cycles.
+
+By following these guidelines, we'll maintain a clean, maintainable codebase that leverages Cursor AI effectively while adhering to our architectural principles. 

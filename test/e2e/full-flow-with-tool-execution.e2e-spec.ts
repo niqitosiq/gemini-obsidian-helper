@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { CommandBus } from '@nestjs/cqrs';
 import { ConfigModule } from '@nestjs/config';
-import { ProcessMessageCommand } from '../../src/modules/telegram/application/commands/process-message.command';
+import { MessageDto } from '../../src/modules/telegram/interface/dtos/message.dto';
+import { ProcessMessageService } from '../../src/modules/telegram/application/services/process-message.service';
 import { LlmProcessorService } from '../../src/modules/llm/application/services/llm-processor.service';
 import { ITelegramService } from '../../src/modules/telegram/domain/interfaces/telegram-service.interface';
 import { IVaultService } from '../../src/modules/vault/domain/interfaces/vault-service.interface';
@@ -22,7 +22,7 @@ interface MockVaultService extends Partial<IVaultService> {
 }
 
 describe('Full Flow with Tool Execution (e2e)', () => {
-  let commandBus: CommandBus;
+  let processMessageService: ProcessMessageService;
   let telegramService: MockTelegramService;
   let llmProcessorService: MockLlmProcessorService;
   let vaultService: MockVaultService;
@@ -137,7 +137,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
       .compile();
 
     // We don't need to initialize the app for these tests as we're directly using the CommandBus
-    commandBus = { execute: jest.fn() } as unknown as CommandBus;
+    processMessageService = moduleFixture.get<ProcessMessageService>(ProcessMessageService);
     telegramService = mockTelegramService;
     llmProcessorService = mockLlmProcessorService;
     vaultService = mockVaultService;
@@ -167,20 +167,20 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     };
 
     (llmProcessorService.processUserMessage as jest.Mock).mockResolvedValueOnce(llmResponse);
-    (commandBus.execute as jest.Mock).mockImplementation(async (command) => {
-      if (command instanceof ProcessMessageCommand) {
+    (processMessageService.processMessage as jest.Mock).mockImplementation(async (messageDto) => {
+      if (messageDto instanceof MessageDto) {
         const result = await llmProcessorService.processUserMessage(
-          command.message.text,
-          command.message.userId,
+          messageDto.text,
+          messageDto.userId,
           expect.any(String),
         );
 
         if (result.text) {
-          await telegramService.sendMessage(command.message.chatId, result.text);
+          await telegramService.sendMessage(messageDto.chatId, result.text);
         } else if (result.error) {
-          await telegramService.sendMessage(command.message.chatId, `Error: ${result.error}`);
+          await telegramService.sendMessage(messageDto.chatId, `Error: ${result.error}`);
         } else if (result.toolCalls) {
-          await telegramService.sendMessage(command.message.chatId, 'Processing tool calls...');
+          await telegramService.sendMessage(messageDto.chatId, 'Processing tool calls...');
           // Process tool calls
           for (const toolCall of result.toolCalls) {
             if (toolCall.tool === 'create_file') {
@@ -193,7 +193,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
           }
         } else {
           await telegramService.sendMessage(
-            command.message.chatId,
+            messageDto.chatId,
             'Received your message, but no response was generated.',
           );
         }
@@ -201,13 +201,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     });
 
     // Act
-    await commandBus.execute(
-      new ProcessMessageCommand({
-        chatId,
-        userId,
-        text: userMessage,
-      }),
-    );
+    await processMessageService.processMessage(new MessageDto(chatId, userId, userMessage));
 
     // Assert
     expect(llmProcessorService.processUserMessage).toHaveBeenCalledWith(
@@ -254,20 +248,20 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     };
 
     (llmProcessorService.processUserMessage as jest.Mock).mockResolvedValueOnce(llmResponse);
-    (commandBus.execute as jest.Mock).mockImplementation(async (command) => {
-      if (command instanceof ProcessMessageCommand) {
+    (processMessageService.processMessage as jest.Mock).mockImplementation(async (messageDto) => {
+      if (messageDto instanceof MessageDto) {
         const result = await llmProcessorService.processUserMessage(
-          command.message.text,
-          command.message.userId,
+          messageDto.text,
+          messageDto.userId,
           expect.any(String),
         );
 
         if (result.text) {
-          await telegramService.sendMessage(command.message.chatId, result.text);
+          await telegramService.sendMessage(messageDto.chatId, result.text);
         } else if (result.error) {
-          await telegramService.sendMessage(command.message.chatId, `Error: ${result.error}`);
+          await telegramService.sendMessage(messageDto.chatId, `Error: ${result.error}`);
         } else if (result.toolCalls) {
-          await telegramService.sendMessage(command.message.chatId, 'Processing tool calls...');
+          await telegramService.sendMessage(messageDto.chatId, 'Processing tool calls...');
           // Process tool calls
           for (const toolCall of result.toolCalls) {
             if (toolCall.tool === 'create_file') {
@@ -280,7 +274,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
           }
         } else {
           await telegramService.sendMessage(
-            command.message.chatId,
+            messageDto.chatId,
             'Received your message, but no response was generated.',
           );
         }
@@ -288,13 +282,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     });
 
     // Act
-    await commandBus.execute(
-      new ProcessMessageCommand({
-        chatId,
-        userId,
-        text: userMessage,
-      }),
-    );
+    await processMessageService.processMessage(new MessageDto(chatId, userId, userMessage));
 
     // Assert
     expect(llmProcessorService.processUserMessage).toHaveBeenCalledWith(
@@ -333,20 +321,20 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     };
 
     (llmProcessorService.processUserMessage as jest.Mock).mockResolvedValueOnce(llmResponse);
-    (commandBus.execute as jest.Mock).mockImplementation(async (command) => {
-      if (command instanceof ProcessMessageCommand) {
+    (processMessageService.processMessage as jest.Mock).mockImplementation(async (messageDto) => {
+      if (messageDto instanceof MessageDto) {
         const result = await llmProcessorService.processUserMessage(
-          command.message.text,
-          command.message.userId,
+          messageDto.text,
+          messageDto.userId,
           expect.any(String),
         );
 
         if (result.text) {
-          await telegramService.sendMessage(command.message.chatId, result.text);
+          await telegramService.sendMessage(messageDto.chatId, result.text);
         } else if (result.error) {
-          await telegramService.sendMessage(command.message.chatId, `Error: ${result.error}`);
+          await telegramService.sendMessage(messageDto.chatId, `Error: ${result.error}`);
         } else if (result.toolCalls) {
-          await telegramService.sendMessage(command.message.chatId, 'Processing tool calls...');
+          await telegramService.sendMessage(messageDto.chatId, 'Processing tool calls...');
           // Process tool calls
           for (const toolCall of result.toolCalls) {
             if (toolCall.tool === 'delete_file') {
@@ -355,7 +343,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
           }
         } else {
           await telegramService.sendMessage(
-            command.message.chatId,
+            messageDto.chatId,
             'Received your message, but no response was generated.',
           );
         }
@@ -363,13 +351,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     });
 
     // Act
-    await commandBus.execute(
-      new ProcessMessageCommand({
-        chatId,
-        userId,
-        text: userMessage,
-      }),
-    );
+    await processMessageService.processMessage(new MessageDto(chatId, userId, userMessage));
 
     // Assert
     expect(llmProcessorService.processUserMessage).toHaveBeenCalledWith(
@@ -404,20 +386,20 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     };
 
     (llmProcessorService.processUserMessage as jest.Mock).mockResolvedValueOnce(llmResponse);
-    (commandBus.execute as jest.Mock).mockImplementation(async (command) => {
-      if (command instanceof ProcessMessageCommand) {
+    (processMessageService.processMessage as jest.Mock).mockImplementation(async (messageDto) => {
+      if (messageDto instanceof MessageDto) {
         const result = await llmProcessorService.processUserMessage(
-          command.message.text,
-          command.message.userId,
+          messageDto.text,
+          messageDto.userId,
           expect.any(String),
         );
 
         if (result.text) {
-          await telegramService.sendMessage(command.message.chatId, result.text);
+          await telegramService.sendMessage(messageDto.chatId, result.text);
         }
 
         if (result.toolCalls) {
-          await telegramService.sendMessage(command.message.chatId, 'Processing tool calls...');
+          await telegramService.sendMessage(messageDto.chatId, 'Processing tool calls...');
           // Process tool calls
           for (const toolCall of result.toolCalls) {
             if (toolCall.tool === 'create_file') {
@@ -425,10 +407,10 @@ describe('Full Flow with Tool Execution (e2e)', () => {
             }
           }
         } else if (result.error) {
-          await telegramService.sendMessage(command.message.chatId, `Error: ${result.error}`);
+          await telegramService.sendMessage(messageDto.chatId, `Error: ${result.error}`);
         } else if (!result.text) {
           await telegramService.sendMessage(
-            command.message.chatId,
+            messageDto.chatId,
             'Received your message, but no response was generated.',
           );
         }
@@ -436,13 +418,7 @@ describe('Full Flow with Tool Execution (e2e)', () => {
     });
 
     // Act
-    await commandBus.execute(
-      new ProcessMessageCommand({
-        chatId,
-        userId,
-        text: userMessage,
-      }),
-    );
+    await processMessageService.processMessage(new MessageDto(chatId, userId, userMessage));
 
     // Assert
     expect(llmProcessorService.processUserMessage).toHaveBeenCalledWith(
