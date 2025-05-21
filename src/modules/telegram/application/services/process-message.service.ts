@@ -1,15 +1,14 @@
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs';
-import { ProcessMessageCommand } from './process-message.command';
+import { Inject, Logger, forwardRef, Injectable } from '@nestjs/common';
 import { LlmProcessorService } from '../../../llm/application/services/llm-processor.service';
-import { Inject, Logger, forwardRef } from '@nestjs/common';
 import { IVaultService } from '../../../vault/domain/interfaces/vault-service.interface';
 import { ITelegramService } from '../../domain/interfaces/telegram-service.interface';
 import { ToolsRegistryService } from '../../../tools/application/services/tools-registry.service';
 import { VaultService } from 'src/modules/vault/infrastructure/services/vault.service';
+import { MessageDto } from '../../interface/dtos/message.dto';
 
-@CommandHandler(ProcessMessageCommand)
-export class ProcessMessageHandler implements ICommandHandler<ProcessMessageCommand> {
-  private readonly logger = new Logger(ProcessMessageHandler.name);
+@Injectable()
+export class ProcessMessageService {
+  private readonly logger = new Logger(ProcessMessageService.name);
 
   constructor(
     @Inject(forwardRef(() => LlmProcessorService))
@@ -18,8 +17,8 @@ export class ProcessMessageHandler implements ICommandHandler<ProcessMessageComm
     private readonly toolsRegistry: ToolsRegistryService,
   ) {}
 
-  async execute(command: ProcessMessageCommand): Promise<void> {
-    const { chatId, userId, text } = command.message;
+  async processMessage(message: MessageDto): Promise<void> {
+    const { chatId, userId, text } = message;
 
     // Get vault context
     let vaultContext: string | undefined;
@@ -67,7 +66,7 @@ export class ProcessMessageHandler implements ICommandHandler<ProcessMessageComm
         });
       }
     } catch (error) {
-      this.logger.error(`Error in ProcessMessageHandler: ${error.message}`, error.stack);
+      this.logger.error(`Error in ProcessMessageService: ${error.message}`, error.stack);
       await this.toolsRegistry.executeTool('reply', {
         message: `Error processing your message: ${error.message}`,
         chat_id: chatId,

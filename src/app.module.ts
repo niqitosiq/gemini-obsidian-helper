@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { CqrsModule } from '@nestjs/cqrs';
 import { ScheduleModule } from '@nestjs/schedule';
 
 import { SharedModule } from './shared/shared.module';
@@ -16,7 +15,6 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
       isGlobal: true,
       envFilePath: '.env',
     }),
-    CqrsModule.forRoot(),
     ScheduleModule.forRoot(),
     SharedModule,
     TelegramModule,

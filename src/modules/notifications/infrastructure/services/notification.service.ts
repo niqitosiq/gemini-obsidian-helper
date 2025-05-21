@@ -1,6 +1,5 @@
-import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { CommandBus } from '@nestjs/cqrs';
 import { INotificationService } from '../../domain/interfaces/notification-service.interface';
 import { ITaskAnalyzerService } from '../../domain/interfaces/task-analyzer-service.interface';
 import { ISchedulingService } from '../../domain/interfaces/scheduling-service.interface';
@@ -10,7 +9,7 @@ import { GoogleGenaiAdapter } from '../../../llm/infrastructure/adapters/google-
 import { HistoryService } from '../../../../shared/infrastructure/persistence/history.service';
 import { PromptBuilderService } from '../../../../shared/infrastructure/services/prompt-builder.service';
 import { HistoryEntry } from '../../../../shared/domain/models/history-entry.model';
-import { SendMessageCommand } from '../../../telegram/application/commands/send-message.command';
+import { SendMessageService } from '../../../telegram/application/services/send-message.service';
 import { TaskAnalyzerService } from './task-analyzer.service';
 import { SchedulingService } from './scheduling.service';
 
@@ -27,7 +26,8 @@ export class NotificationService implements INotificationService, OnModuleInit {
     private readonly llmAdapter: GoogleGenaiAdapter,
     private readonly historyService: HistoryService,
     private readonly promptBuilder: PromptBuilderService,
-    private readonly commandBus: CommandBus,
+    @Inject(forwardRef(() => SendMessageService))
+    private readonly sendMessageService: SendMessageService,
   ) {}
 
   async onModuleInit() {
@@ -47,12 +47,10 @@ export class NotificationService implements INotificationService, OnModuleInit {
       try {
         const numericUserId = parseInt(userId, 10);
         if (!isNaN(numericUserId)) {
-          await this.commandBus.execute(
-            new SendMessageCommand(
-              numericUserId,
-              '🔄 *System Notification*\nDaily notification reset completed. All reminders for today have been rescheduled.',
-              'Markdown',
-            ),
+          await this.sendMessageService.sendMessage(
+            numericUserId,
+            '🔄 *System Notification*\nDaily notification reset completed. All reminders for today have been rescheduled.',
+            'Markdown',
           );
         }
       } catch (error) {
@@ -135,8 +133,10 @@ export class NotificationService implements INotificationService, OnModuleInit {
           if (!isNaN(numericUserId)) {
             this.logger.debug(`Sending task reminder to user ${numericUserId}`);
 
-            const result = await this.commandBus.execute(
-              new SendMessageCommand(numericUserId, message, 'Markdown'),
+            const result = await this.sendMessageService.sendMessage(
+              numericUserId,
+              message,
+              'Markdown',
             );
 
             if (!result) {
@@ -195,9 +195,7 @@ export class NotificationService implements INotificationService, OnModuleInit {
       this.logger.log(`Generated morning digest for user ${userId}`);
 
       // Send the digest
-      const result = await this.commandBus.execute(
-        new SendMessageCommand(userId, message, 'Markdown'),
-      );
+      const result = await this.sendMessageService.sendMessage(userId, message, 'Markdown');
 
       if (result) {
         this.logger.log(`Successfully sent morning digest to user ${userId}`);
@@ -217,33 +215,31 @@ export class NotificationService implements INotificationService, OnModuleInit {
       this.logger.log(`Preparing evening check-in for user ${userId}`);
 
       // Get completed tasks for today
-      const completedTasks = await this.taskAnalyzer.getCompletedTasksToday();
-      this.logger.debug(`Found ${completedTasks.length} completed tasks for today`);
+      const completedTasksToday = await this.taskAnalyzer.getCompletedTasksToday();
+      this.logger.debug(`Found ${completedTasksToday.length} completed tasks for today`);
 
-      // Get incomplete tasks for today
+      // Get uncompleted tasks for today
       const todaysTasks = await this.taskAnalyzer.getTodaysTasks();
-      const incompleteTasks = todaysTasks.filter((task) => !task.isCompleted());
-      this.logger.debug(`Found ${incompleteTasks.length} incomplete tasks for today`);
+      const uncompletedTasksToday = todaysTasks.filter((task) => !task.isCompleted());
+      this.logger.debug(`Found ${uncompletedTasksToday.length} uncompleted tasks for today`);
 
-      // Get postponed tasks
-      const postponedTasks = await this.taskAnalyzer.getPostponedTasks();
-      this.logger.debug(`Found ${postponedTasks.length} postponed tasks`);
+      // Get recent history
+      const recentHistory = this.historyService.getHistory().slice(-5);
 
       // Prepare data for LLM
       const checkInData = {
-        completedTasks: completedTasks.map((task) => ({
-          title: task.getTitle(),
-          priority: task.getPriority(),
-        })),
-        incompleteTasks: incompleteTasks.map((task) => ({
+        date: new Date(),
+        completedTasksToday: completedTasksToday.map((task) => ({
           title: task.getTitle(),
           priority: task.getPriority(),
           status: task.getStatus(),
         })),
-        postponedTasks: postponedTasks.map((task) => ({
+        uncompletedTasksToday: uncompletedTasksToday.map((task) => ({
           title: task.getTitle(),
+          priority: task.getPriority(),
           status: task.getStatus(),
         })),
+        recentHistory: this.formatRecentHistory(recentHistory),
       };
 
       // Generate personalized evening check-in using LLM
@@ -252,9 +248,7 @@ export class NotificationService implements INotificationService, OnModuleInit {
       this.logger.log(`Generated evening check-in for user ${userId}`);
 
       // Send the check-in
-      const result = await this.commandBus.execute(
-        new SendMessageCommand(userId, message, 'Markdown'),
-      );
+      const result = await this.sendMessageService.sendMessage(userId, message, 'Markdown');
 
       if (result) {
         this.logger.log(`Successfully sent evening check-in to user ${userId}`);
@@ -643,32 +637,27 @@ export class NotificationService implements INotificationService, OnModuleInit {
     let message = `🌙 *Evening Check-In*\n\n`;
 
     // Add completed tasks section
-    message += `*Completed Today (${checkInData.completedTasks.length}):*\n`;
-    if (checkInData.completedTasks.length > 0) {
-      checkInData.completedTasks.forEach((task: any, index: number) => {
+    message += `*Completed Today (${checkInData.completedTasksToday.length}):*\n`;
+    if (checkInData.completedTasksToday.length > 0) {
+      checkInData.completedTasksToday.forEach((task: any, index: number) => {
         message += `${index + 1}. ✅ ${task.title}\n`;
       });
     } else {
       message += 'No tasks completed today.\n';
     }
 
-    // Add incomplete tasks section
-    message += `\n*Still Pending (${checkInData.incompleteTasks.length}):*\n`;
-    if (checkInData.incompleteTasks.length > 0) {
-      checkInData.incompleteTasks.forEach((task: any, index: number) => {
+    // Add uncompleted tasks section
+    message += `\n*Still Pending (${checkInData.uncompletedTasksToday.length}):*\n`;
+    if (checkInData.uncompletedTasksToday.length > 0) {
+      checkInData.uncompletedTasksToday.forEach((task: any, index: number) => {
         message += `${index + 1}. ⬜ ${task.title}\n`;
       });
     } else {
       message += 'All tasks completed! Great job!\n';
     }
 
-    // Add postponed tasks section if any
-    if (checkInData.postponedTasks.length > 0) {
-      message += `\n*Postponed Tasks (${checkInData.postponedTasks.length}):*\n`;
-      checkInData.postponedTasks.forEach((task: any, index: number) => {
-        message += `${index + 1}. ⏳ ${task.title}\n`;
-      });
-    }
+    // Add recent history
+    message += `\n*Recent History:*\n${checkInData.recentHistory}\n`;
 
     // Add reflection prompt
     message +=

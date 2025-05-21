@@ -1,25 +1,16 @@
-import { Injectable, Inject, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleDestroy, forwardRef } from '@nestjs/common';
 import { IToolHandler } from '../../domain/interfaces/tool-handler.interface';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FilePathService } from './file-path.service';
-import { CommandBus, CqrsModule, EventBus } from '@nestjs/cqrs';
-import { SendMessageCommand } from '../../../telegram/application/commands/send-message.command';
-import { TelegramModule } from 'src/modules/telegram/telegram.module';
-import { ToolsModule } from '../../tools.module';
-import { DiscoveryService } from '@nestjs/core';
-import { Subject } from 'rxjs';
-import { takeUntil } from 'rxjs/operators';
+import { SendMessageService } from '../../../telegram/application/services/send-message.service';
 
 /**
  * Tool implementation for creating files
  */
 @Injectable()
 export class CreateFileToolHandler implements IToolHandler {
-  constructor(
-    private readonly filePathService: FilePathService,
-    private readonly commandBus: CommandBus,
-  ) {}
+  constructor(private readonly filePathService: FilePathService) {}
 
   /**
    * Create a file with the given path and content
@@ -177,20 +168,13 @@ export class DeleteFileToolHandler implements IToolHandler {
  * Tool implementation for sending replies to the user
  */
 @Injectable()
-export class ReplyToolHandler implements IToolHandler, OnModuleDestroy {
+export class ReplyToolHandler implements IToolHandler {
   private readonly logger = new Logger(ReplyToolHandler.name);
-  private destroy$ = new Subject<void>();
 
-  constructor(private readonly commandBus: CommandBus) {
-    this.commandBus.pipe(takeUntil(this.destroy$)).subscribe((event) => {
-      console.log('Event received:', event);
-    });
-  }
-
-  onModuleDestroy() {
-    this.destroy$.next();
-    this.destroy$.complete();
-  }
+  constructor(
+    @Inject(forwardRef(() => SendMessageService))
+    private readonly sendMessageService: SendMessageService,
+  ) {}
 
   /**
    * Send a reply message to the user
@@ -226,25 +210,10 @@ export class ReplyToolHandler implements IToolHandler, OnModuleDestroy {
         };
       }
 
-      this.logger.log(`Dispatching SendMessageCommand to chat ${numericChatId}`);
-
-      // console.log(Reflect.getMetadata('providers', ToolsModule));
-      // Use the CommandBus to dispatch the SendMessageCommand
-      // const providers = this.discoveryService.getProviders();
-      // console.log(providers);
+      this.logger.log(`Sending message to chat ${numericChatId}`);
       console.log('ReplyToolHandler execute');
 
-      // @ts-ignore
-      // console.log(this.commandBus.moduleRef);
-
-      const command = new SendMessageCommand(numericChatId, message, 'Markdown');
-      this.logger.log(
-        `ReplyToolHandler dispatching command: ${command.constructor.name}, Type: ${typeof command.constructor}`,
-      );
-      this.logger.log(
-        `Is SendMessageCommand class the same? ${command.constructor === SendMessageCommand}`,
-      );
-      const result = await this.commandBus.execute(command);
+      const result = await this.sendMessageService.sendMessage(numericChatId, message, 'Markdown');
 
       if (result) {
         return {

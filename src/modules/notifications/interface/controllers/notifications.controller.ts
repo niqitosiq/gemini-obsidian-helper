@@ -1,8 +1,7 @@
 import { Controller, Post, Body, Param, Get, Inject, HttpStatus, HttpCode } from '@nestjs/common';
-import { CommandBus } from '@nestjs/cqrs';
-import { SendTaskReminderCommand } from '../../application/commands/send-task-reminder.command';
-import { SendMorningDigestCommand } from '../../application/commands/send-morning-digest.command';
-import { SendEveningCheckInCommand } from '../../application/commands/send-evening-check-in.command';
+import { SendTaskReminderService } from '../../services/send-task-reminder.service';
+import { SendMorningDigestService } from '../../services/send-morning-digest.service';
+import { SendEveningCheckInService } from '../../services/send-evening-check-in.service';
 import { ITaskAnalyzerService } from '../../domain/interfaces/task-analyzer-service.interface';
 import { INotificationService } from '../../domain/interfaces/notification-service.interface';
 import { Task } from '../../domain/models/task.model';
@@ -16,7 +15,9 @@ export class NotificationsController {
   private readonly logger = new Logger(NotificationsController.name);
 
   constructor(
-    private readonly commandBus: CommandBus,
+    private readonly sendTaskReminderService: SendTaskReminderService,
+    private readonly sendMorningDigestService: SendMorningDigestService,
+    private readonly sendEveningCheckInService: SendEveningCheckInService,
     private readonly taskAnalyzer: TaskAnalyzerService,
     private readonly notificationService: NotificationService,
     private readonly configService: ConfigService,
@@ -25,19 +26,21 @@ export class NotificationsController {
   @Post('task-reminder/:userId')
   async sendTaskReminder(@Param('userId') userId: string, @Body() taskData: any): Promise<boolean> {
     const task = new Task(taskData.id, taskData);
-    return this.commandBus.execute(
-      new SendTaskReminderCommand(task, taskData.minutesBefore || 15, parseInt(userId, 10)),
+    return this.sendTaskReminderService.sendTaskReminder(
+      task,
+      taskData.minutesBefore || 15,
+      parseInt(userId, 10),
     );
   }
 
   @Post('morning-digest/:userId')
   async sendMorningDigest(@Param('userId') userId: string): Promise<boolean> {
-    return this.commandBus.execute(new SendMorningDigestCommand(parseInt(userId, 10)));
+    return this.sendMorningDigestService.sendMorningDigest(parseInt(userId, 10));
   }
 
   @Post('evening-check-in/:userId')
   async sendEveningCheckIn(@Param('userId') userId: string): Promise<boolean> {
-    return this.commandBus.execute(new SendEveningCheckInCommand(parseInt(userId, 10)));
+    return this.sendEveningCheckInService.sendEveningCheckIn(parseInt(userId, 10));
   }
 
   @Post('reset-reminders')

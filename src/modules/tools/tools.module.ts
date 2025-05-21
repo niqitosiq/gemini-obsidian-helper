@@ -1,5 +1,4 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { CqrsModule } from '@nestjs/cqrs';
 import {
   CreateFileToolHandler,
   ModifyFileToolHandler,
@@ -17,7 +16,7 @@ import { SharedModule } from '../../shared/shared.module';
 import { DiscoveryModule } from '@nestjs/core';
 
 @Module({
-  imports: [SharedModule, VaultModule, DiscoveryModule, CqrsModule],
+  imports: [SharedModule, VaultModule, DiscoveryModule, forwardRef(() => TelegramModule)],
   providers: [
     FilePathService,
     CreateFileToolHandler,

@@ -1,13 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { CommandBus, CqrsModule } from '@nestjs/cqrs';
 import { ConfigModule } from '@nestjs/config';
-import { ProcessMessageCommand } from '../../src/modules/telegram/application/commands/process-message.command';
-import { ProcessMessageHandler } from '../../src/modules/telegram/application/commands/process-message.handler';
+import { MessageDto } from '../../src/modules/telegram/interface/dtos/message.dto';
+import { ProcessMessageService } from '../../src/modules/telegram/application/services/process-message.service';
 import { LlmProcessorService } from '../../src/modules/llm/application/services/llm-processor.service';
 import { ToolsRegistryService } from '../../src/modules/tools/application/services/tools-registry.service';
 
-describe('CommandBus Registration', () => {
-  let commandBus: CommandBus;
+describe('ProcessMessage Service', () => {
+  let processMessageService: ProcessMessageService;
   let llmProcessorService: LlmProcessorService;
   let telegramService: any;
   let vaultService: any;
@@ -44,14 +43,13 @@ describe('CommandBus Registration', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
-        CqrsModule,
         ConfigModule.forRoot({
           isGlobal: true,
           envFilePath: '.env.test',
         }),
       ],
       providers: [
-        ProcessMessageHandler,
+        ProcessMessageService,
         {
           provide: LlmProcessorService,
           useValue: mockLlmProcessorService,
@@ -68,33 +66,29 @@ describe('CommandBus Registration', () => {
           provide: ToolsRegistryService,
           useValue: mockToolsRegistry,
         },
+        {
+          provide: 'VaultService',
+          useValue: mockVaultService,
+        },
       ],
     }).compile();
 
-    commandBus = moduleFixture.get<CommandBus>(CommandBus);
+    processMessageService = moduleFixture.get<ProcessMessageService>(ProcessMessageService);
     llmProcessorService = moduleFixture.get<LlmProcessorService>(LlmProcessorService);
     telegramService = moduleFixture.get('ITelegramService');
     vaultService = moduleFixture.get('IVaultService');
     toolsRegistry = moduleFixture.get(ToolsRegistryService);
-
-    // Register the command handler manually
-    // commandBus.register([ProcessMessageHandler]);
   });
 
-  it('should handle ProcessMessageCommand correctly', async () => {
+  it('should handle message processing correctly', async () => {
     // Arrange
     const chatId = 123456789;
     const userId = 987654321;
     const userMessage = 'привет, бро, меня зовут Никита, ты мой помощник!';
+    const messageDto = new MessageDto(chatId, userId, userMessage);
 
     // Act
-    await commandBus.execute(
-      new ProcessMessageCommand({
-        chatId,
-        userId,
-        text: userMessage,
-      }),
-    );
+    await processMessageService.processMessage(messageDto);
 
     // Assert
     expect(llmProcessorService.processUserMessage).toHaveBeenCalledWith(

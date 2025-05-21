@@ -1,10 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { TelegramService } from '../../infrastructure/services/telegram.service';
-import { CommandBus } from '@nestjs/cqrs';
-import { ProcessMessageCommand } from '../commands/process-message.command';
 import { MessageDto } from '../../interface/dtos/message.dto';
 import { ConfigService } from '../../../../shared/infrastructure/config/config.service';
-import { ProcessMessageHandler } from '../commands/process-message.handler';
+import { ProcessMessageService } from '../services/process-message.service';
 import { ModuleRef } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { INotificationService } from '../../../notifications/domain/interfaces/notification-service.interface';
@@ -17,9 +15,8 @@ export class TelegramAppService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly telegramService: TelegramService,
-    private readonly commandBus: CommandBus,
     private readonly configService: ConfigService,
-    private readonly processMessageHandler: ProcessMessageHandler,
+    private readonly processMessageService: ProcessMessageService,
     private readonly moduleRef: ModuleRef,
     @Inject(forwardRef(() => NotificationService))
     private readonly notificationService: NotificationService,
@@ -54,8 +51,8 @@ export class TelegramAppService implements OnModuleInit, OnModuleDestroy {
         const messageDto = new MessageDto(chatId, userId, text);
 
         try {
-          // Use the handler directly instead of the CommandBus
-          await this.processMessageHandler.execute(new ProcessMessageCommand(messageDto));
+          // Use the service directly
+          await this.processMessageService.processMessage(messageDto);
         } catch (error) {
           console.error('Error processing message:', error);
           await ctx.reply('Sorry, there was an error processing your message.');
