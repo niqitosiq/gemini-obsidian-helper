@@ -1,10 +1,9 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { VaultModule } from '../vault/vault.module';
 import { SharedModule } from '../../shared/shared.module';
 import { LlmModule } from '../llm/llm.module';
 import { TelegramModule } from '../telegram/telegram.module';
-import { VaultService } from '../vault/infrastructure/services/vault.service';
+import { ToolsModule } from '../tools/tools.module';
 
 // Services
 import { SendTaskReminderService } from './services/send-task-reminder.service';
@@ -24,8 +23,15 @@ import { DeleteFileToolHandler } from '../tools/infrastructure/services/file-too
 import { ReplyToolHandler } from '../tools/infrastructure/services/file-tools.service';
 import { FinishToolHandler } from '../tools/infrastructure/services/file-tools.service';
 import { FilePathService } from '../tools/infrastructure/services/file-path.service';
+import { VaultService } from '../vault/infrastructure/services/vault.service';
 @Module({
-  imports: [VaultModule, SharedModule, LlmModule, forwardRef(() => TelegramModule)],
+  imports: [
+    VaultModule,
+    SharedModule,
+    LlmModule,
+    forwardRef(() => TelegramModule),
+    forwardRef(() => ToolsModule),
+  ],
   providers: [
     SendTaskReminderService,
     SendMorningDigestService,

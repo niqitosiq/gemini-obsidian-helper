@@ -16,12 +16,12 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
+    NotificationsModule,
     SharedModule,
     TelegramModule,
     LlmModule,
     VaultModule,
     ToolsModule,
-    NotificationsModule,
   ],
 })
 export class AppModule {}

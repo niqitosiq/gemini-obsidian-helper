@@ -1,5 +1,12 @@
-import { Inject, Injectable, Logger, OnModuleInit, forwardRef } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+  forwardRef,
+} from '@nestjs/common';
+import * as schedule from 'node-schedule';
 import { INotificationService } from '../../domain/interfaces/notification-service.interface';
 import { ITaskAnalyzerService } from '../../domain/interfaces/task-analyzer-service.interface';
 import { ISchedulingService } from '../../domain/interfaces/scheduling-service.interface';
@@ -15,12 +22,16 @@ import { SchedulingService } from './scheduling.service';
 import { VaultService } from '../../../vault/infrastructure/services/vault.service';
 import { ProcessMessageService } from '../../../telegram/application/services/process-message.service';
 import { LlmResponse } from '../../../llm/application/services/llm-processor.service';
+import { CronExpression } from '@nestjs/schedule';
 
 @Injectable()
-export class NotificationService implements INotificationService, OnModuleInit {
+export class NotificationService implements INotificationService, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NotificationService.name);
   private readonly userLanguage: string = 'ru'; // Default to Russian, could be made configurable
   private activeReminders: Map<string, { taskId: string; scheduledTime: Date }> = new Map();
+  private dailyResetJob: schedule.Job | null = null;
+  private morningDigestJob: schedule.Job | null = null;
+  private eveningCheckInJob: schedule.Job | null = null;
 
   constructor(
     readonly taskAnalyzer: TaskAnalyzerService,
@@ -43,11 +54,32 @@ export class NotificationService implements INotificationService, OnModuleInit {
 
   async onModuleInit() {
     this.logger.log('Notification service initialized');
+
+    // Set up daily reset cron job using node-schedule
+    this.dailyResetJob = schedule.scheduleJob('daily-reset', '0 0 * * *', async () => {
+      await this.handleDailyReset();
+    });
+
+    this.logger.log('Daily reset cron job scheduled for midnight');
+
+    // Set up morning digest cron job (8:00 AM daily)
+    this.morningDigestJob = schedule.scheduleJob('morning-digest', '0 8 * * *', async () => {
+      await this.handleMorningDigest();
+    });
+
+    this.logger.log('Morning digest cron job scheduled for 8:00 AM daily');
+
+    // Set up evening check-in cron job (10:00 PM daily)
+    this.eveningCheckInJob = schedule.scheduleJob('evening-check-in', '0 22 * * *', async () => {
+      await this.handleEveningCheckIn();
+    });
+
+    this.logger.log('Evening check-in cron job scheduled for 8:00 PM daily');
+
     // Schedule initial tasks
     await this.resetAndRescheduleAllReminders();
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async handleDailyReset() {
     this.logger.log('Performing daily notification reset at midnight');
     await this.resetAndRescheduleAllReminders();
@@ -68,6 +100,52 @@ export class NotificationService implements INotificationService, OnModuleInit {
         this.logger.error(`Error sending daily reset notification to user ${userId}:`, error);
       }
     }
+  }
+
+  async handleMorningDigest() {
+    this.logger.log('Performing morning digest broadcast at 8:00 AM');
+
+    const userIds = this.configService.getTelegramUserIds();
+    const results = [];
+
+    for (const userId of userIds) {
+      try {
+        const numericUserId = parseInt(userId, 10);
+        if (!isNaN(numericUserId)) {
+          const result = await this.sendMorningDigest(numericUserId);
+          results.push({ userId: numericUserId, success: result });
+        }
+      } catch (error) {
+        this.logger.error(`Error sending morning digest to user ${userId}:`, error);
+        results.push({ userId, success: false, error: error.message });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    this.logger.log(`Morning digest sent to ${successCount}/${userIds.length} users`);
+  }
+
+  async handleEveningCheckIn() {
+    this.logger.log('Performing evening check-in broadcast at 8:00 PM');
+
+    const userIds = this.configService.getTelegramUserIds();
+    const results = [];
+
+    for (const userId of userIds) {
+      try {
+        const numericUserId = parseInt(userId, 10);
+        if (!isNaN(numericUserId)) {
+          const result = await this.sendEveningCheckIn(numericUserId);
+          results.push({ userId: numericUserId, success: result });
+        }
+      } catch (error) {
+        this.logger.error(`Error sending evening check-in to user ${userId}:`, error);
+        results.push({ userId, success: false, error: error.message });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    this.logger.log(`Evening check-in sent to ${successCount}/${userIds.length} users`);
   }
 
   async resetAndRescheduleAllReminders(): Promise<void> {
@@ -999,6 +1077,24 @@ Do not include any text outside the JSON structure. Ensure your message is conci
         `Error in resetAndRescheduleRemindersForFile: ${error.message}`,
         error.stack,
       );
+    }
+  }
+
+  async onModuleDestroy() {
+    // Clean up the cron jobs when the module is destroyed
+    if (this.dailyResetJob) {
+      this.dailyResetJob.cancel();
+      this.logger.log('Daily reset cron job cancelled');
+    }
+
+    if (this.morningDigestJob) {
+      this.morningDigestJob.cancel();
+      this.logger.log('Morning digest cron job cancelled');
+    }
+
+    if (this.eveningCheckInJob) {
+      this.eveningCheckInJob.cancel();
+      this.logger.log('Evening check-in cron job cancelled');
     }
   }
 }
