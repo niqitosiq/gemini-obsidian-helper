@@ -86,6 +86,56 @@ npm run build
 npm run start:prod
 ```
 
+## Docker Setup
+
+You can run the application using Docker and Docker Compose:
+
+1. Make sure Docker and Docker Compose are installed on your system
+2. Configure your environment variables in the `.env` file
+3. Build and start the application using the provided script:
+
+```bash
+# Make the script executable if needed
+chmod +x docker.sh
+
+# Build Docker images
+./docker.sh build
+
+# Start containers in detached mode
+./docker.sh up
+
+# View logs
+./docker.sh logs
+
+# Stop containers
+./docker.sh down
+```
+
+Or use Docker Compose directly:
+
+```bash
+# Build and start
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop and remove containers
+docker-compose down
+```
+
+### Docker Volume Configuration
+
+The Docker Compose setup includes the following volume mounts:
+
+- `.:/usr/src/app`: The entire project directory
+- `/usr/src/app/node_modules`: Node modules volume
+- `${OBSIDIAN_VAULT_PATH:-./vault}:/usr/src/app/vault`: Your Obsidian vault
+- `./temp_audio:/usr/src/app/temp_audio`: Temporary audio files
+- `./conversation_history.json:/usr/src/app/conversation_history.json`: Conversation history
+
+Make sure to set the `OBSIDIAN_VAULT_PATH` in your `.env` file to point to your Obsidian vault location.
+
 ## Testing
 
 ```

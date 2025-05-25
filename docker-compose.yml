@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: obsidian-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+      - ${OBSIDIAN_VAULT_PATH:-./vault}:/usr/src/app/vault
+      - ./temp_audio:/usr/src/app/temp_audio
+      - ./conversation_history.json:/usr/src/app/conversation_history.json
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - OBSIDIAN_VAULT_PATH=/usr/src/app/vault
+    networks:
+      - obsidian-network
+    command: npm run start:dev
+
+networks:
+  obsidian-network:
+    driver: bridge 

@@ -34,7 +34,7 @@ export class GoogleGenaiAdapter {
         config.maxOutputTokens = maxOutputTokens;
       } else {
         // Default to a reasonable token limit
-        config.maxOutputTokens = 4096;
+        config.maxOutputTokens = 1000000;
       }
 
       // Always set response format to JSON
