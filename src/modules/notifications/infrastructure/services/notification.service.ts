@@ -69,8 +69,8 @@ export class NotificationService implements INotificationService, OnModuleInit, 
 
     this.logger.log('Morning digest cron job scheduled for 8:00 AM daily');
 
-    // Set up evening check-in cron job (10:00 PM daily)
-    this.eveningCheckInJob = schedule.scheduleJob('evening-check-in', '0 22 * * *', async () => {
+    // Set up evening check-in cron job (21:18 daily)
+    this.eveningCheckInJob = schedule.scheduleJob('evening-check-in', '18 19 * * *', async () => {
       await this.handleEveningCheckIn();
     });
 

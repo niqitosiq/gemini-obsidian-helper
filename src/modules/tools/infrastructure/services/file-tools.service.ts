@@ -62,7 +62,7 @@ export class ModifyFileToolHandler implements IToolHandler {
   constructor(private readonly filePathService: FilePathService) {}
 
   /**
-   * Modify an existing file with new content
+   * Modify an existing file with new content, or create it if it doesn't exist
    *
    * @param params - Object containing file_path and content
    * @returns Result of the operation
@@ -81,29 +81,34 @@ export class ModifyFileToolHandler implements IToolHandler {
       // Resolve the absolute file path using the base path
       const absoluteFilePath = this.filePathService.resolveFilePath(file_path);
 
-      // Check if file exists
+      // Check if file exists to determine if we're creating or modifying
+      let fileExists = true;
       try {
         await fs.access(absoluteFilePath);
       } catch (error) {
-        return {
-          status: 'error',
-          message: `File not found: ${file_path} (${absoluteFilePath})`,
-        };
+        fileExists = false;
       }
 
-      // Write new content to file
+      // Ensure directory exists (important for new files)
+      const dirPath = path.dirname(absoluteFilePath);
+      await fs.mkdir(dirPath, { recursive: true });
+
+      // Write content to file (creates if doesn't exist, modifies if exists)
       await fs.writeFile(absoluteFilePath, content, 'utf8');
 
+      const action = fileExists ? 'modified' : 'created';
       return {
         status: 'success',
-        message: `File modified successfully: ${file_path}`,
+        message: `File ${action} successfully: ${file_path}`,
         file_path,
         absolute_path: absoluteFilePath,
+        action,
       };
+      
     } catch (error) {
       return {
         status: 'error',
-        message: `Error modifying file: ${error.message || error}`,
+        message: `Error modifying/creating file: ${error.message || error}`,
       };
     }
   }

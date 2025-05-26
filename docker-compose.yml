@@ -19,7 +19,7 @@ services:
       - .env
     environment:
       - NODE_ENV=${NODE_ENV:-development}
-      - OBSIDIAN_VAULT_PATH=/usr/src/app/vault
+      - OBSIDIAN_VAULT_PATH=./vault
     networks:
       - obsidian-network
     command: npm run start:dev

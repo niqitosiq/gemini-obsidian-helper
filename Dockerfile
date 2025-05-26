@@ -20,6 +20,12 @@ FROM node:20-alpine
 
 WORKDIR /usr/src/app
 
+# Set timezone
+ENV TZ="Europe/Moscow"
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/node_modules ./node_modules
 COPY package*.json ./
