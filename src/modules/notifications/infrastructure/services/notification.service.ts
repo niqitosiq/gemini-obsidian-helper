@@ -354,12 +354,17 @@ export class NotificationService implements INotificationService, OnModuleInit, 
       if (reminders && reminders.length > 0) {
         this.logger.debug(`Task has ${reminders.length} custom reminders defined`);
         for (const reminder of reminders) {
+          if (this.activeReminders.has(task.getId())) {
+            this.activeReminders.delete(task.getId());
+          }
           this.scheduleTaskReminder(task, reminder.minutesBefore);
         }
       } else {
         // Default reminder: 15 minutes before task
         this.logger.debug(`No custom reminders defined, using default 15 minute reminder`);
-        this.scheduleTaskReminder(task, 15);
+        if (!this.activeReminders.has(task.getId())) {
+          this.scheduleTaskReminder(task, 15);
+        }
       }
     } catch (error) {
       this.logger.error(`Error scheduling reminders for task: ${error.message}`, error.stack);
